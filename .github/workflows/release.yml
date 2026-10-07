@@ -1,0 +1,83 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag (例如 v0.2.0)"
+        required: true
+
+permissions:
+  contents: write
+  id-token: write        # 来源证明(attestation)需要 OIDC
+  attestations: write
+
+jobs:
+  release:
+    name: 打包并创建 Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 版本一致性门禁 (tag / hublane.py / pyproject.toml)
+        run: python tools/check_version.py "${{ github.event.inputs.tag || github.ref_name }}"
+
+      - name: 测试门禁
+        run: |
+          python -m pip install --upgrade pip flake8
+          python -m flake8 hublane.py tests tools
+          python hublane.py --check
+          python -m unittest discover -s tests -v
+
+      - name: 打包 (源码 tar.gz + sdist/wheel)
+        run: |
+          VER="$(python -c "import re;print(re.search(r'VERSION = \"([^\"]+)\"', open('hublane.py').read()).group(1))")"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="hublane-$VER/" -o "dist/hublane-$VER.tar.gz" HEAD
+          python -m pip install --upgrade build
+          python -m build --sdist --wheel --outdir dist
+
+      - name: 附加"下载即用"的单文件与安装脚本
+        run: |
+          cp hublane.py config.json dist/
+          cp install.sh uninstall.sh dist/
+          cp install-windows.bat uninstall-windows.bat dist/
+          cp install-windows-service.bat uninstall-windows-service.bat dist/
+          cp -r tools docs bench dist/ 2>/dev/null || true
+          ls -l dist
+
+      - name: 生成校验值 (SHA256SUMS)
+        run: |
+          cd dist
+          sha256sum ./* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: 发布来源证明 (provenance)
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "dist/hublane-*.tar.gz,dist/hublane-*.whl"
+
+      - name: 从 CHANGELOG 生成 Release 说明
+        run: |
+          python tools/changelog_section.py "${{ github.event.inputs.tag || github.ref_name }}" > RELEASE_NOTES.md
+          echo "--- RELEASE_NOTES.md ---"
+          cat RELEASE_NOTES.md
+
+      - name: 创建 GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: hublane ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
+          files: |
+            dist/*

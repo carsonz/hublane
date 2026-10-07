@@ -1,0 +1,59 @@
+name: Bug 报告
+description: 上报可复现的故障(连不上、502、证书报错等)
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **最省事的做法**: 贴 `/diag` 的输出, 它已包含版本/配置(token 已打码)/状态/日志尾部:
+        `curl -s -H "X-Hublane-Token: <token>" http://127.0.0.1:28898/diag`
+        下面各项可留空。
+        **安全漏洞请勿公开提交**, 见 SECURITY.md。
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 运行平台
+      options:
+        - WSL (Ubuntu/Debian)
+        - Windows (计划任务模式)
+        - Windows (服务模式)
+        - 其他 Linux
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: hublane 版本
+      description: "`python hublane.py --version` 或面板左下角"
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: symptom
+    attributes:
+      label: 现象与复现命令
+      description: 尽量给出完整命令与完整输出(例如 `curl -v -x http://127.0.0.1:8899 ...`)
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: /status 输出 (上游健康度 / DoH 健康度 / 计数器)
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: "WSL: `journalctl -u hublane -n 200` ; Windows: `%LOCALAPPDATA%\\hublane\\hublane.log`"
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: config
+    attributes:
+      label: 改动过的配置项 (config.json 片段, 注意隐去敏感信息)
+      render: json
+    validations:
+      required: false

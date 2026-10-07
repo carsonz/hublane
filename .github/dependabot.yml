@@ -1,0 +1,10 @@
+version: 2
+updates:
+  # 运行时零依赖, 只需跟进 CI 里用到的 Action
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "ci"
+    labels: ["dependencies"]

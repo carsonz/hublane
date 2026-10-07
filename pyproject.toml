@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hublane"
+version = "0.1.0"
+description = "Zero-dependency local relay proxy that makes GitHub reachable from WSL/Windows behind restrictive networks."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "The hublane Authors" }]
+keywords = ["proxy", "relay", "github", "wsl", "mitm", "socks5", "gfw", "doh"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: System :: Networking",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/carsonz/hublane"
+Repository = "https://github.com/carsonz/hublane"
+Changelog = "https://github.com/carsonz/hublane/blob/main/CHANGELOG.md"
+Roadmap = "https://github.com/carsonz/hublane/blob/main/ROADMAP.md"
+Security = "https://github.com/carsonz/hublane/security/advisories"
+
+[project.scripts]
+hublane = "hublane:main"
+
+[project.optional-dependencies]
+dev = ["flake8>=6", "build", "coverage>=7"]
+
+[tool.setuptools]
+py-modules = ["hublane"]

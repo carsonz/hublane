@@ -1,0 +1,24 @@
+name: 功能建议
+description: 提出新功能或改进(建议先看 ROADMAP.md 里是否已有计划)
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 你要解决的实际问题
+      description: 描述场景与痛点, 而不是直接给方案
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 你期望的做法
+    validations:
+      required: false
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: 约束确认
+      options:
+        - label: 我确认该功能不需要引入第三方依赖(项目坚持纯标准库)
+        - label: 我确认该功能不涉及"内置免费节点/绕过证书校验/自动改 hosts"(见 ROADMAP 明确不做)
