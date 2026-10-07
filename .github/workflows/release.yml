@@ -62,7 +62,7 @@ jobs:
           cat SHA256SUMS
 
       - name: 发布来源证明 (provenance)
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "dist/hublane-*.tar.gz,dist/hublane-*.whl"
 
