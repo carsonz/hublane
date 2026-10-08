@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import select
+import shlex
 import shutil
 import signal
 import socket
@@ -49,7 +50,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 
 APP = "hublane"
-VERSION = "0.1.1"              # 版本号唯一来源; pyproject.toml 构建期读取它
+VERSION = "0.2.0"              # 版本号唯一来源; pyproject.toml 构建期读取它
+# v0.2.0 第 4/12 条: --check-update 与 --update 用它定位发布仓库
+REPO = "carsonz/hublane"
 IS_WIN = os.name == "nt"
 # PyInstaller onefile 模式下 __file__ 指向临时解包目录(_MEIPASS), 每次运行都会被清空。
 # 若继续用它当数据目录, 证书/配置/状态/日志会跟着临时目录一起消失, 所以冻结后
@@ -223,6 +226,10 @@ DEFAULTS = {
         "https://cloudflare-dns.com/dns-query?name={host}&type={type}",
         "https://dns.google/resolve?name={host}&type={type}",
     ],
+    # v0.2.0 第 5 条: 用户预置 IP, 写法 {"域名": ["1.2.3.4", "2001:db8::1"]}。
+    # 它与 DoH 结果、历史已验真 IP 一起进候选池, 三者都要过握手验真才算可用 ——
+    # 换网络后失效的会被自动淘汰, 所以预置错了也不会一直拖慢。
+    "preset_ips": {},
     "enable_ipv6": True,
     "refresh_interval": 300,
     # 1.5: 主动探测(raw 镜像 + github 链 + extra 站点), 让每条链都有冷启动数据
@@ -260,7 +267,10 @@ DEFAULTS = {
     "success_floor": 0.5,             # 成功率低于该值直接降级
     "log_level": "INFO",
     "log_format": "text",             # 2.2: text 或 json(单行结构化日志)
-    "verbose": True,
+    # 收口(v0.2.0 第 1 条): true 时强制 DEBUG 级日志(含每次请求细节), 由 setup_logging() 读取。
+    # 默认 false: 真正的日常级别由 log_level 决定, verbose 只在排查时手动打开 ——
+    # 默认 true 会把访问日志(DEBUG)全部刷进日志文件, 既吵又占空间。
+    "verbose": False,
 }
 
 _HOP_HEADERS = {
@@ -285,6 +295,9 @@ _doh_lock = threading.Lock()
 _pool = {}
 _pool_lock = threading.Lock()
 _stop = threading.Event()
+# v0.2.0 第 10 条: 暂停开关。置位时所有域名一律纯 TCP 隧道直通(不换源、不 MITM),
+# 效果等同"这台机器上没装 hublane", 但服务还在跑, 可随时恢复 —— 不用停 systemd/服务。
+_paused = threading.Event()
 _started_at = time.time()
 _counters = {"requests": 0, "ok": 0, "fail": 0, "truncated": 0,
              "pool_retry": 0, "pool_hit": 0, "pool_miss": 0,
@@ -292,7 +305,9 @@ _counters = {"requests": 0, "ok": 0, "fail": 0, "truncated": 0,
              # 纯 TCP 隧道(非托管域名 CONNECT / 明文 http:// / SSH)单独统计。
              # 不并入 requests/ok/fail: 那三项的口径是"HTTP 请求 / 单次上游尝试",
              # 隧道既不是 HTTP 请求也没有"上游", 混在一起会让面板口径失真。
-             "tunnel_conns": 0, "tunnel_fail": 0, "tunnel_bytes": 0}
+             "tunnel_conns": 0, "tunnel_fail": 0, "tunnel_bytes": 0,
+             # v0.2.0 第 6b 条: 命中 abort 伪上游、被主动放弃的请求数
+             "aborted": 0}
 _counters_lock = threading.Lock()
 # 2.1 可观测性: 固定桶延迟直方图 + 最近请求样本(仅内存, 不落盘, 不出本机)
 LATENCY_BUCKETS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0)   # 秒(桶上界)
@@ -503,7 +518,7 @@ def reload_config():
     changed = sorted(k for k in merged if old.get(k) != merged.get(k))
     CONFIG.clear()
     CONFIG.update(merged)
-    if any(k in changed for k in ("log_level", "log_file", "log_format")):
+    if any(k in changed for k in ("log_level", "log_file", "log_format", "verbose")):
         setup_logging()
     if any(k in changed for k in ("pool_enabled", "pool_max_per_key",
                                   "pool_max_total", "raw_upstreams",
@@ -529,7 +544,9 @@ def reload_config():
 
 def _known_upstreams(cfg=None):
     cfg = CONFIG if cfg is None else cfg
-    known = {"direct", "watt", "chain"}
+    # "abort" 是伪上游: 命中即快速失败(不发起连接、不消耗超时),
+    # 用于"被封且找不到替代"的域名 —— 借鉴 dev-sidecar 的 abort 语义。
+    known = {"direct", "watt", "chain", "abort"}
     return known | set(MIRROR_PREFIX) | set(GH_MIRROR_PREFIX) \
         | set(JSDELIVR_HOSTS) | set(SITE_MIRRORS) \
         | set((cfg.get("custom_mirrors") or {}).keys())
@@ -593,6 +610,44 @@ def _validate_host_groups(cfg, errs):
                         % (name, ", ".join(sorted(groups)) or "无"))
 
 
+def _validate_preset_ips(cfg, errs):
+    """v0.2.0 第 5 条: preset_ips 必须是 {"域名": ["IP", ...]}"""
+    raw = cfg.get("preset_ips")
+    if raw is None:                      # 未配置 -> 合法
+        return
+    # 注意别写 `cfg.get(...) or {}`: 空列表/空字符串会被它吞成 {} 而静默放行
+    if not isinstance(raw, dict):
+        errs.append("preset_ips 必须是字典: {\"域名\": [\"1.2.3.4\", ...]}")
+        return
+    for host, ips in raw.items():
+        if not str(host).strip():
+            errs.append("preset_ips 含空域名")
+            continue
+        if not isinstance(ips, (list, tuple)):
+            errs.append("preset_ips[%s] 必须是 IP 列表" % host)
+            continue
+        for ip in ips:
+            text = str(ip).strip()
+            if not _is_ip(text):
+                errs.append("preset_ips[%s] 含非法 IP: %r" % (host, ip))
+
+
+def _is_ip(text):
+    """只做形状判断(够用即可): 真正的可用性由握手验真决定"""
+    if not text or any(c in text for c in " \t/\\"):
+        return False
+    try:
+        socket.inet_pton(socket.AF_INET, text)
+        return True
+    except (OSError, ValueError, TypeError):
+        pass
+    try:
+        socket.inet_pton(socket.AF_INET6, text)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def validate_config(cfg=None):
     """P2: 启动即校验, 给出可读报错而不是运行时才炸
 
@@ -604,6 +659,7 @@ def validate_config(cfg=None):
     _validate_ports(cfg, errs)
     _validate_doh(cfg, errs)
     _validate_host_groups(cfg, errs)
+    _validate_preset_ips(cfg, errs)
     if str(cfg.get("metrics_host") or "").strip() and \
             not cfg.get("metrics_token"):
         errs.append("metrics_host 绑定到非本机地址时必须设置 metrics_token")
@@ -643,6 +699,10 @@ class JsonFormatter(logging.Formatter):
 def setup_logging():
     global LOG_FILE
     level = getattr(logging, str(CONFIG.get("log_level", "INFO")).upper(), logging.INFO)
+    # 收口(v0.2.0 第 1 条): verbose=true 强制 DEBUG —— 该键此前只在 DEFAULTS 里声明,
+    # 全代码无读取点(文档承诺、代码没有), 现在按语义接上。
+    if CONFIG.get("verbose"):
+        level = logging.DEBUG
     log.setLevel(level)
     if str(CONFIG.get("log_format", "text")).lower() == "json":
         fmt = JsonFormatter()
@@ -964,6 +1024,26 @@ def _warm_async(host):
     threading.Thread(target=run, daemon=True).start()
 
 
+def _preset_ips(host):
+    """v0.2.0 第 5 条: 用户预置 IP -> [(ip, family), ...]
+
+    --check 已拦掉非法项, 这里再做一次形状过滤以防热重载绕过校验。
+    """
+    raw = CONFIG.get("preset_ips") or {}
+    if not isinstance(raw, dict):
+        return []
+    got = raw.get(host)
+    if got is None:
+        got = raw.get("*." + host)
+    out = []
+    for ip in got or []:
+        text = str(ip).strip()
+        if not _is_ip(text):
+            continue
+        out.append((text, socket.AF_INET6 if ":" in text else socket.AF_INET))
+    return out
+
+
 def pick_ips(host, force=False):
     with _ipcache_lock:
         cached = _ipcache.get(host)
@@ -976,14 +1056,31 @@ def pick_ips(host, force=False):
     pairs = doh_resolve(host)
     if not pairs:
         log.info("resolve %s: DoH 无结果", host)
+
+    # v0.2.0 第 5 条: 候选池 = 用户预置 IP + 历史已验真 IP + DoH 新解析, 合并去重。
+    # 三者都要重新过一次握手验真 —— 这是"每次运行动态更新"的关键:
+    # 换了网络, 旧 IP 验不过就被自动淘汰, 不需要用户清理, 也不会把请求送去死 IP。
+    merged, seen = [], set()
+    for src in (_preset_ips(host), (cached[1] if cached else []), pairs or []):
+        for item in src or []:
+            try:
+                ip, fam = str(item[0]), int(item[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if (ip, fam) in seen:
+                continue
+            seen.add((ip, fam))
+            merged.append((ip, fam))
+    if not merged:
+        # 连候选都没有(DoH 全挂、无预置、也无历史), 这时才用历史记录兜底
         return cached[1] if cached else []
 
     def work(item):
         ip, fam = item
         return ip, fam, _verify_ip(host, ip, fam, CONFIG.get("verify_timeout", 4))
     good = []
-    with futures.ThreadPoolExecutor(max_workers=min(8, len(pairs))) as pool:
-        for ip, fam, el in pool.map(work, pairs):
+    with futures.ThreadPoolExecutor(max_workers=min(8, len(merged))) as pool:
+        for ip, fam, el in pool.map(work, merged):
             if el is not None:
                 good.append((el, ip, fam))
     good.sort()
@@ -993,7 +1090,9 @@ def pick_ips(host, force=False):
             _ipcache[host] = (time.time(), ranked)
         log.info("verified %s -> %s", host, ",".join(i[0] for i in ranked[:3]))
     elif cached:
-        return cached[1]
+        # 有候选却一个都没验过: 历史 IP 已不可信, 不再复活
+        log.warning("verify %s: %d 个候选全部验真失败, 历史 IP 不再复用",
+                    host, len(merged))
     return ranked
 
 
@@ -1469,7 +1568,19 @@ def managed_hosts():
     return GH_HOSTS | RAW_HOSTS | extra_hosts() | refresh_hosts()
 
 
+def set_paused(value):
+    """v0.2.0 第 10 条: 暂停/恢复代理(服务不停, 只是不再接管流量)"""
+    if value:
+        _paused.set()
+    else:
+        _paused.clear()
+    return True, ("已暂停: 所有域名改为纯 TCP 隧道直通, 不再换源或解密"
+                  if value else "已恢复: 受管域名重新走上游链")
+
+
 def should_intercept(host):
+    if _paused.is_set():
+        return False
     base = str(host).lower()
     return base in RAW_HOSTS or base in GH_HOSTS or base in extra_hosts() \
         or per_host_chain(base) is not None
@@ -1840,6 +1951,16 @@ def relay_chain(writer, host, path, method, headers, body, chain):
     timeout = CONFIG.get("timeout", 60)
     errors = []
     for name in chain:
+        if name == "abort":
+            # v0.2.0 第 6b 条: 已知无解的资源, 直接放弃 ——
+            # 不发起连接、不消耗超时, 避免"N 个上游各等一遍"把请求拖到几十秒。
+            _count("aborted")
+            sample_add(host=host, upstream="abort", method=method,
+                       path=path[:80], result="abort", ms=0, bytes=0,
+                       detail="按配置快速失败")
+            errors.append("abort: 已知不可达, 按配置直接放弃(未发起任何连接)")
+            log.info("abort %s%s (按配置快速失败)", host, path[:36])
+            return False, errors
         t0 = time.time()
         resp = conn = poolkey = None
         committed = False
@@ -2123,6 +2244,12 @@ def handle_client(sock, _addr):
             pass
         first_byte = sock.recv(1, socket.MSG_PEEK)
         if first_byte == b"\x05":
+            # 收口(v0.2.0 第 1 条): enable_socks5 此前只用于面板展示, 这里始终嗅探;
+            # 现在真正生效 —— 关闭后 SOCKS5 握手直接拒绝, 端口只服务 HTTP。
+            if not CONFIG.get("enable_socks5", True):
+                _count("rejected")
+                log.debug("收到 SOCKS5 握手, 但 enable_socks5=false, 已拒绝")
+                return
             if not peer_allowed(sock):      # 1.2: SOCKS5 侧同样受 uid 白名单约束
                 _count("rejected")
                 return
@@ -2231,23 +2358,28 @@ def probe_specs():
     return specs
 
 
+def _probe_round():
+    """跑一轮探测 —— 后台周期任务与面板"立即刷新"共用同一份实现"""
+    for host, path, names in probe_specs():
+        for name in names:
+            t0 = time.time()
+            try:
+                _probe_one(name, host, path, int(CONFIG.get("timeout", 60)))
+                _u_ok(host, name, time.time() - t0)
+                log.info("probe %s <- %s ok %.2fs", host, name, time.time() - t0)
+            except Exception as exc:
+                _u_fail(host, name)
+                log.info("probe %s <- %s fail %s", host, name, repr(exc)[:40])
+    save_state()
+
+
 def _probe_all():
     try:
         time.sleep(max(0, float(CONFIG.get("probe_delay", 10) or 0)))
     except (TypeError, ValueError):
         time.sleep(10)
     while not _stop.is_set():
-        for host, path, names in probe_specs():
-            for name in names:
-                t0 = time.time()
-                try:
-                    _probe_one(name, host, path, int(CONFIG.get("timeout", 60)))
-                    _u_ok(host, name, time.time() - t0)
-                    log.info("probe %s <- %s ok %.2fs", host, name, time.time() - t0)
-                except Exception as exc:
-                    _u_fail(host, name)
-                    log.info("probe %s <- %s fail %s", host, name, repr(exc)[:40])
-        save_state()
+        _probe_round()
         try:
             interval = int(CONFIG.get("probe_interval", 0) or 0)
         except (TypeError, ValueError):
@@ -2260,7 +2392,10 @@ def _probe_all():
 
 # ------------------------------------------------------------ P2/P3: 指标 + PAC
 def pac_content():
-    managed = sorted(GH_HOSTS | RAW_HOSTS | extra_hosts())
+    # v0.2.0 第 11 条: 改用 managed_hosts() —— 此前只取 GH/RAW/extra 三者并集,
+    # 把 per_host_upstreams 里的精确域名漏掉了。而 should_intercept() 是认这些域名的,
+    # 于是浏览器走 PAC 时会绕过代理、直接连, 配的规则(含 abort)形同虚设。
+    managed = sorted(managed_hosts())
     wildcards = sorted({str(p).strip().lower() for p in per_host_config()
                         if "*" in str(p) or str(p).strip().startswith(".")})
     rules = ",\n".join('  "%s": 1' % h for h in managed)
@@ -2278,6 +2413,97 @@ def pac_content():
         "  return \"DIRECT\";\n}\n"
     ) % (rules, wild, int(CONFIG.get("listen_port", 8899)),
          int(CONFIG.get("listen_port", 8899)))
+
+
+def hosts_text():
+    """v0.2.0 第 7 条: 只读导出已验真 IP(hosts 格式)
+
+    边界要说清楚: hublane **绝不写入**系统 hosts(见 ROADMAP「明确不做」),
+    这里只是把已经验真的结果交给用户, 用不用由用户自己决定。
+    """
+    out = ["# hublane 已验真 IP(只读导出, 生成于 %s)"
+           % time.strftime("%Y-%m-%d %H:%M:%S"),
+           "# hublane 不会写入系统 hosts 文件, 以下内容仅供你自行参考或复制。",
+           "# 每个域名只给当前最快的一个 IP; 完整候选见 /status 的 ipcache。",
+           ""]
+    with _ipcache_lock:
+        items = sorted(_ipcache.items())
+    if not items:
+        out.append("# (暂无已验真 IP: 还没跑过验真, 或当前网络下全部验真失败)")
+        return "\n".join(out) + "\n"
+    for host, (_ts, pairs) in items:
+        if not pairs:
+            continue
+        out.append("%s %s" % (pairs[0][0], host))
+    return "\n".join(out) + "\n"
+
+
+def ip_pool_summary():
+    """v0.2.0 第 5 条: --check 附带输出已验真 IP 池摘要(离线, 只读 state.json)"""
+    with _ipcache_lock:
+        items = sorted(_ipcache.items())
+    alive = [(h, p) for h, (_t, p) in items if p]
+    if not alive:
+        return "已验真 IP 池: 空(尚未跑过验真)"
+    lines = ["已验真 IP 池: %d 个域名" % len(alive)]
+    for host, (ts, pairs) in [(h, _ipcache[h]) for h, _ in alive]:
+        lines.append("  %-38s %s  (%s前验真)"
+                     % (host, ", ".join(p[0] for p in pairs[:3]),
+                        _rel_time(time.time() - ts)))
+    return "\n".join(lines)
+
+
+def cmd_for_url(url):
+    """v0.2.0 第 9 条: URL -> 等价的"走 hublane"命令
+
+    纯字符串变换: 不联网、不解析 DNS、不访问目标站, 因此可单测、也不会泄露隐私。
+    """
+    text = str(url or "").strip()
+    if not text:
+        return {"ok": False, "error": "URL 为空"}
+    port = int(CONFIG.get("listen_port", 8899))
+    proxy = "http://127.0.0.1:%d" % port
+    quoted = shlex.quote(text)
+    try:
+        host = urllib.parse.urlsplit(
+            text if "//" in text else "//" + text).hostname or ""
+    except ValueError:
+        host = ""
+    cmds = [{"label": "curl", "cmd": "curl -x %s %s" % (proxy, quoted)},
+            {"label": "任何命令(前缀)",
+             "cmd": "http_proxy=%s https_proxy=%s <你的命令>" % (proxy, proxy)}]
+    if text.startswith("git@") or text.endswith(".git") or \
+            any(k in host for k in ("github.com", "gitlab.com",
+                                    "bitbucket.org", "gitee.com")):
+        cmds.insert(1, {"label": "git clone",
+                        "cmd": "git -c http.proxy=%s -c https.proxy=%s clone %s"
+                               % (proxy, proxy, quoted)})
+    cmds.append({"label": "npm(写入配置)",
+                 "cmd": "npm config set proxy %s && npm config set https-proxy %s"
+                        % (proxy, proxy)})
+    cmds.append({"label": "pip(单次)",
+                 "cmd": "pip --proxy %s install <包名>" % proxy})
+    return {"ok": True, "url": text, "proxy": proxy, "commands": cmds}
+
+
+def refresh_now():
+    """v0.2.0 第 10 条: 换网络后手动重跑一次"验真 + 探测"
+
+    后台线程执行, 避免面板点一下就卡住几十秒(验真全部域名可能很慢)。
+    """
+    def run():
+        for host in sorted(refresh_hosts()):
+            try:
+                pick_ips(host, force=True)
+            except Exception:
+                pass
+        try:
+            _probe_round()
+        except Exception:
+            pass
+    threading.Thread(target=run, daemon=True).start()
+    return True, "已在后台重新验真 %d 个域名并探测上游, 稍后刷新本页查看" \
+        % len(refresh_hosts())
 
 
 def _rel_time(seconds):
@@ -2355,6 +2581,8 @@ def status_json():
         "uptime": _rel_time(time.time() - _started_at),
         "listen": "%s:%s" % (CONFIG.get("listen_host"), CONFIG.get("listen_port")),
         "socks5": CONFIG.get("enable_socks5", True),
+        # v0.2.0 第 10 条: 暂停时所有域名纯隧道直通, 服务仍在运行
+        "paused": _paused.is_set(),
         "managed_github": sorted(GH_HOSTS),
         "managed_raw": sorted(RAW_HOSTS),
         "managed_extra": sorted(extra_hosts()),
@@ -2408,7 +2636,9 @@ def log_tail(lines=200):
             data = fh.readlines()
     except OSError as exc:
         return ["(读取日志失败: %s)" % exc]
-    return [line.rstrip("\n") for line in data[-lines:]]
+    # 双重保险: 写日志时已打码, 这里再擦一遍 —— 打码之前写的旧日志里可能还留着
+    # token, 而 /diag 是要贴到 issue 里的, 不能把它带出去。
+    return [_redact_query(line.rstrip("\n")) for line in data[-lines:]]
 
 
 def diag_text():
@@ -2443,8 +2673,25 @@ def metrics_authorized(given, path):
     return hmac.compare_digest(str(given), token)
 
 
-def panel_html():
+def panel_html(query=""):
     counters = counters_snapshot()
+    # 面板里的表单(/reload、/refresh)是 POST, 拿不到请求头里的 token,
+    # 必须把访问面板时带的 ?token= 原样拼到 action 上 —— 否则一开 metrics_token,
+    # 页脚那两个按钮就全变 401(此前 /reload 正是这么坏的)。
+    token_val = urllib.parse.parse_qs(query or "").get("token", [""])[0]
+    token_qs = html.escape("?token=" + token_val) if token_val else ""
+    # JS 里不能用 HTML 转义(<script> 内不解码实体), 改用 JSON 字面量防注入
+    token_json = json.dumps(token_val).replace("<", "\\u003c")
+    # v0.2.0 第 10 条: 暂停/恢复。暂停期间所有域名纯隧道直通(服务仍在运行),
+    # 用于在不停 systemd/服务的前提下临时"当它不存在"。
+    if _paused.is_set():
+        pause_btn = ('<span class="dim">[已暂停: 全部直通]</span>'
+                     ' <form class="inline" method="post" action="/resume%s">'
+                     '<button title="恢复接管受管域名">恢复</button></form>' % token_qs)
+    else:
+        pause_btn = ('<form class="inline" method="post" action="/pause%s">'
+                     '<button title="服务不停, 只是所有域名改为纯 TCP 隧道直通">'
+                     '暂停</button></form>' % token_qs)
 
     def cells(row):
         return "".join("<td>%s</td>" % html.escape(str(item)) for item in row)
@@ -2477,6 +2724,7 @@ def panel_html():
         ("ok", "上游成功", "某个上游成功回源并返回完整响应"),
         ("fail", "上游失败", "单次上游尝试失败数(一个请求可有多次失败)"),
         ("truncated", "响应截断", "完整性校验发现响应被截断, 已降级上游或主动断开"),
+        ("aborted", "主动放弃", "命中 abort 伪上游: 已知不可达, 直接失败且不消耗超时"),
         ("pool_retry", "复用重试", "连接池里的复用连接失效, 换新连接透明重试"),
         ("pool_hit", "池命中", "从连接池复用到可用连接"),
         ("pool_miss", "池未命中", "连接池无空闲连接, 新建直连"),
@@ -2552,8 +2800,18 @@ def panel_html():
    border:1px solid #232a36;border-radius:6px;margin-top:6px}
  .scroll table{margin-top:0}
  .scroll thead th{position:sticky;top:0;background:#12151b;z-index:1}
+ /* v0.2.0 第 9 条: URL -> 等价命令 小工具 */
+ .tool{margin:8px 0}
+ .tool input{background:#0d1017;color:#e6e9ef;border:1px solid #232a36;
+   border-radius:4px;padding:6px 8px;font:inherit;width:60%%}
+ .tool pre{background:#0d1017;border:1px solid #232a36;border-radius:6px;
+   padding:8px;white-space:pre-wrap;margin-top:6px}
 </style></head><body>
-<h1>%(app)s <span class="dim">%(ver)s</span></h1>
+<h1>%(app)s <span class="dim">%(ver)s</span>
+  <form class="inline" method="post" action="/refresh%(qs)s" style="margin-left:12px">
+   <button title="重新验真所有受管域名并探测上游(切换网络后点这个)">立即刷新</button></form>
+  %(pause_btn)s
+</h1>
 <p class="dim">平台 %(plat)s · 监听 <code>%(listen)s</code> · SOCKS5 %(socks)s ·
  连接池 %(pool)s · 活动连接 %(conns)s · 运行 %(uptime)s ·
  日志 <code>%(logfile)s</code></p>
@@ -2578,11 +2836,55 @@ def panel_html():
 %(samples)s</table></div>
 <h2>已校验真实 IP</h2>
 <div class="scroll"><table><tr><th>域名</th><th>IP</th></tr>%(ips)s</table></div>
+<h2>URL → 等价命令</h2>
+<div class="tool">
+  <input id="hlUrl" type="text"
+         placeholder="粘贴一个 URL, 例如 https://github.com/owner/repo.git">
+  <button type="button" onclick="hlCmd()">生成命令</button>
+  <pre id="hlOut" class="dim">纯字符串变换、不联网: 给的是"走 hublane"的等价命令。</pre>
+</div>
 <footer>JSON: <a href="/status">/status</a> · 样本: <a href="/requests">/requests</a> ·
  诊断包: <a href="/diag">/diag</a> · PAC: <a href="/pac">/pac</a> ·
- 存活: <a href="/healthz">/healthz</a> ·
- <form class="inline" method="post" action="/reload"><button>重载配置</button></form>
+ 已验真 IP: <a href="/hosts">/hosts</a> · 存活: <a href="/healthz">/healthz</a> ·
+ <form class="inline" method="post" action="/reload%(qs)s"><button>重载配置</button></form>
  · 5 秒自动刷新</footer>
+<script>
+/* v0.2.0 第 13 条: 点表头排序, 升序/降序切换; 数字列按数值比, 其余按字典序 */
+document.querySelectorAll('table').forEach(function(tb){
+  tb.querySelectorAll('th').forEach(function(th, idx){
+    th.style.cursor='pointer'; th.title='点击排序(升序/降序)';
+    th.addEventListener('click', function(){
+      var body=tb.tBodies[0]; if(!body) return;
+      var rows=Array.prototype.slice.call(body.rows);
+      var asc=th.getAttribute('data-asc') !== '1';
+      th.setAttribute('data-asc', asc ? '1' : '0');
+      rows.sort(function(a,b){
+        var x=(a.cells[idx].textContent||'').trim(),
+            y=(b.cells[idx].textContent||'').trim();
+        var nx=parseFloat(x), ny=parseFloat(y);
+        var cmp=(isNaN(nx)||isNaN(ny))?x.localeCompare(y):nx-ny;
+        return asc?cmp:-cmp;
+      });
+      rows.forEach(function(r){ body.appendChild(r); });
+    });
+  });
+});
+/* v0.2.0 第 9 条: URL -> 等价命令(服务端做变换, 可单测) */
+var HL_TOKEN = %(token_json)s;
+function hlCmd(){
+  var u=document.getElementById('hlUrl').value.trim();
+  var out=document.getElementById('hlOut');
+  if(!u){ out.textContent='请先粘贴一个 URL'; return; }
+  out.textContent='生成中...';
+  var q='/cmd?url='+encodeURIComponent(u)
+        +(HL_TOKEN?('&token='+encodeURIComponent(HL_TOKEN)):'');
+  fetch(q).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok){ out.textContent='错误: '+d.error; return; }
+    out.textContent=d.commands.map(function(c){
+      return c.label+':\n  '+c.cmd;}).join('\n\n');
+  }).catch(function(e){ out.textContent='请求失败: '+e; });
+}
+</script>
 </body></html>
 """ % {
         "app": html.escape(APP), "ver": html.escape(VERSION),
@@ -2606,7 +2908,8 @@ def panel_html():
         "uptime": html.escape(_rel_time(time.time() - _started_at)),
         "logfile": html.escape(LOG_FILE),
         "token": token_hint, "cards": cards, "health": health, "doh": doh,
-        "ips": ip_rows,
+        "ips": ip_rows, "qs": token_qs, "token_json": token_json,
+        "pause_btn": pause_btn,
         # 这两块固定高度 + 滚动。行高约 29px(13px/1.6 + 上下 6px padding),
         # 据此把行数换算成像素。下限 5 行、上限 40 行: 太小看不出是滚动区,
         # 太大就失去了限高的意义。
@@ -2621,6 +2924,30 @@ def _scroll_px():
     except (TypeError, ValueError):
         rows = 16
     return max(5, min(40, rows)) * 29
+
+
+def _redact_query(text):
+    """把任意文本里的 token=<值> 打码
+
+    必要性: 访问日志会记下完整请求行(含 ?token=xxx), 一旦落盘就会被 /diag 的
+    "日志尾部"原样带出去 —— 用户把诊断包贴到 issue 里, 等于把口令公开了。
+    所以在**写日志之前**就打码, 而不是等 /diag 输出时再擦。
+    """
+    text = str(text or "")
+    key = "token="
+    low = text.lower()
+    out, idx = [], 0
+    while True:
+        pos = low.find(key, idx)
+        if pos < 0:
+            out.append(text[idx:])
+            return "".join(out)
+        out.append(text[idx:pos + len(key)])
+        end = pos + len(key)
+        while end < len(text) and text[end] not in "& \t\"'<>":
+            end += 1
+        out.append("***")
+        idx = end
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -2654,14 +2981,34 @@ class MetricsHandler(BaseHTTPRequestHandler):
                        json.dumps(samples(), ensure_ascii=False, indent=2))
         elif path.startswith("/diag"):              # 2.4
             self._send(200, "text/plain; charset=utf-8", diag_text())
+        elif path.startswith("/hosts"):             # v0.2.0 第 7 条: 只读导出已验真 IP
+            self._send(200, "text/plain; charset=utf-8", hosts_text())
+        elif path.startswith("/cmd"):               # v0.2.0 第 9 条: URL -> 等价命令
+            qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            self._send(200, "application/json; charset=utf-8",
+                       json.dumps(cmd_for_url((qs.get("url") or [""])[0]),
+                                  ensure_ascii=False, indent=2))
         else:
-            self._send(200, "text/html; charset=utf-8", panel_html())
+            self._send(200, "text/html; charset=utf-8",
+                       panel_html(urllib.parse.urlsplit(self.path).query))
 
     def do_POST(self):
         """2.3: 只有 /reload(受 token 保护), 其余 405"""
         path = urllib.parse.urlsplit(self.path).path
         if not metrics_authorized(self.headers.get("X-Hublane-Token", ""), self.path):
             self._send(401, "text/plain; charset=utf-8", "401 unauthorized\n")
+            return
+        if path.startswith("/refresh"):             # v0.2.0 第 10 条: 手动重跑验真+探测
+            ok, msg = refresh_now()
+            self._send(200 if ok else 400, "application/json; charset=utf-8",
+                       json.dumps({"ok": ok, "message": msg}, ensure_ascii=False))
+            return
+        if path.startswith("/pause") or path.startswith("/resume"):
+            # v0.2.0 第 10 条: 暂停/恢复 —— 服务不停, 只是不再接管流量
+            ok, msg = set_paused(path.startswith("/pause"))
+            self._send(200 if ok else 400, "application/json; charset=utf-8",
+                       json.dumps({"ok": ok, "message": msg,
+                                   "paused": _paused.is_set()}, ensure_ascii=False))
             return
         if not path.startswith("/reload"):
             self._send(405, "text/plain; charset=utf-8", "405 method not allowed\n")
@@ -2673,7 +3020,11 @@ class MetricsHandler(BaseHTTPRequestHandler):
                               ensure_ascii=False))
 
     def log_message(self, fmt, *args):
-        log.debug("metrics: " + fmt, *args)
+        try:
+            msg = fmt % args if args else fmt
+        except Exception:
+            msg = fmt
+        log.debug("metrics: %s", _redact_query(msg))
 
 
 # ------------------------------------------------------------ P1: Windows 真服务
@@ -3108,6 +3459,97 @@ def ensure_utf8_console():
             pass
 
 
+def _ver_tuple(text):
+    """'v0.2.0' -> (0, 2, 0); 只用于比较大小, 非数字段忽略"""
+    nums, cur = [], ""
+    for ch in str(text or ""):
+        if ch.isdigit():
+            cur += ch
+        elif cur:
+            nums.append(int(cur))
+            cur = ""
+            if len(nums) == 3:
+                break
+    if cur and len(nums) < 3:
+        nums.append(int(cur))
+    while len(nums) < 3:
+        nums.append(0)
+    return tuple(nums[:3])
+
+
+def check_update(timeout=8):
+    """v0.2.0 第 4 条: 只回答"有没有新版本", 不下载任何东西
+
+    与"不做自动更新"不冲突: 它只是查询, 动不动手由用户决定。
+    走 _OPENER(绕过代理环境变量), 不会绕回 hublane 自己。
+    """
+    url = "https://api.github.com/repos/%s/releases/latest" % REPO
+    try:
+        with _OPENER.open(url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as exc:
+        return {"ok": False, "error": "查询失败: %s" % repr(exc)[:80]}
+    tag = str(data.get("tag_name") or "").strip()
+    return {"ok": True, "latest": tag, "current": "v" + VERSION,
+            "up_to_date": (not tag) or _ver_tuple(tag) <= _ver_tuple(VERSION),
+            "url": data.get("html_url") or ""}
+
+
+def _looks_like_python(body):
+    """写入前的形状校验: 拒绝空响应/HTML 错误页被当成代码写进去"""
+    head = body[:200000]
+    return b"def main(" in head and b"VERSION" in head
+
+
+def do_update(timeout=20):
+    """v0.2.0 第 12 条: 拉取最新 release 并替换(先备份, 校验失败自动回滚)"""
+    info = check_update(timeout=timeout)
+    if not info.get("ok"):
+        return False, info.get("error", "查询失败")
+    if info.get("up_to_date"):
+        return True, "已是最新版 %s" % VERSION
+    tag = info["latest"]
+    base = "https://raw.githubusercontent.com/%s/%s/" % (REPO, tag)
+    # config.json 不覆盖: 与 install.sh 的契约保持一致(保留用户配置, 新版另存 .new)
+    plan = [("hublane.py", "hublane.py"),
+            ("install.sh", "install.sh"),
+            ("uninstall.sh", "uninstall.sh"),
+            ("config.json", "config.json.new")]
+    if IS_WIN:
+        plan += [("install-windows.bat", "install-windows.bat"),
+                 ("uninstall-windows.bat", "uninstall-windows.bat")]
+    backups = {}
+    try:
+        for remote, local in plan:
+            with _OPENER.open(base + remote, timeout=timeout) as resp:
+                body = resp.read()
+            if len(body) < 64:
+                raise RuntimeError("%s 内容过短(%dB), 疑似下载失败" % (remote, len(body)))
+            if local.endswith(".py") and not _looks_like_python(body):
+                raise RuntimeError("%s 不像是 hublane.py, 拒绝写入" % remote)
+            dest = os.path.join(INSTALL_DIR, local)
+            if os.path.exists(dest):
+                bak = dest + ".bak"
+                shutil.copy2(dest, bak)
+                backups[dest] = bak
+            with open(dest, "wb") as fh:
+                fh.write(body)
+        # 写入后自检: 新代码必须能过配置校验, 否则整体回滚
+        rc = subprocess.call([sys.executable, os.path.join(INSTALL_DIR, "hublane.py"),
+                              "--config", CONF, "--check"])
+        if rc != 0:
+            raise RuntimeError("新版 --check 未通过")
+    except Exception as exc:
+        for dest, bak in backups.items():
+            try:
+                shutil.copy2(bak, dest)
+            except Exception:
+                pass
+        return False, "更新失败, 已回滚到旧版: %s" % repr(exc)[:80]
+    return True, ("已更新到 %s(旧文件备份为 .bak; config.json 保留未动, "
+                  "新版默认配置见 config.json.new)" % tag)
+
+
 def main(argv=None):
     global CONF
     ensure_utf8_console()            # 必须早于 setup_logging(): 它要挂 StreamHandler
@@ -3120,6 +3562,10 @@ def main(argv=None):
                         help="续期叶证书(保留 CA, 系统里已信任的 CA 无需重装)")
     parser.add_argument("--renew-ca", action="store_true",
                         help="连同 CA 一起续期(需重新安装信任)")
+    parser.add_argument("--check-update", action="store_true",
+                        help="只查询是否有新版本并提示(不下载)")
+    parser.add_argument("--update", action="store_true",
+                        help="拉取最新 release 并替换(先备份, 校验失败自动回滚)")
     parser.add_argument("--version", action="version", version="%s %s" % (APP, VERSION))
     args = parser.parse_args(argv)
     if args.config == CONF:      # 未显式指定 --config 时才播种 exe 内置默认值
@@ -3142,6 +3588,24 @@ def main(argv=None):
             emit("CA 已更换: 请重新安装信任 (%s)" % CA_CRT)
         return 0 if ok else 1
 
+    if args.check_update:                      # v0.2.0 第 4 条
+        info = check_update()
+        if not info.get("ok"):
+            emit(info.get("error", "查询失败"), err=True)
+            return 1
+        if info.get("up_to_date"):
+            emit("已是最新版 %s" % VERSION)
+        else:
+            emit("有新版本: %s (当前 v%s)" % (info["latest"], VERSION))
+            emit("发布页: %s" % info.get("url", ""))
+            emit("执行 %s --update 可拉取更新" % APP)
+        return 0
+
+    if args.update:                            # v0.2.0 第 12 条
+        ok, msg = do_update()
+        emit(msg, err=not ok)
+        return 0 if ok else 1
+
     errs = validate_config()
     if errs:
         for e in errs:
@@ -3149,6 +3613,10 @@ def main(argv=None):
         return 2
     if args.check:
         emit("配置校验通过")
+        # v0.2.0 第 5 条: 附带已验真 IP 池摘要。只读 state.json, 不发任何网络请求,
+        # 所以 --check 仍然是"部署前离线门禁"。
+        load_state()
+        emit(ip_pool_summary())
         return 0
     if not (os.path.exists(CERT) and os.path.exists(KEY)):
         emit("缺少证书: %s / %s" % (CERT, KEY), err=True)

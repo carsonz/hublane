@@ -4,8 +4,9 @@
 
 > **hublane** —— 让 WSL 与 Windows 稳定访问 GitHub 的本地中继代理。
 > 纯 Python 标准库，零第三方依赖，一份代码同时跑在 WSL 和 Windows。
-> 版本 **0.1.1** —— 在 0.1.0 基础上修掉本机（WSL/Ubuntu + Python 3.13）实测暴露的
-> 打包、安装与转发问题，并给 github.com 补上镜像链（解决 `git clone/pull` 卡死）。
+> 版本 **0.2.0** —— 清掉 0.1.0 里"文档写了、代码没兑现"的项，并新增动态已验真 IP 池、
+> `abort` 快速失败上游、面板控制（刷新 / 暂停 / 列头排序 / URL→命令）、
+> `--check-update` / `--update` 与只读的 `GET /hosts`。
 > 版本号只在一处设置：`hublane.py` 的 `VERSION`，打包配置在构建期读取它。
 > Rust/Go 移植明确不做，见 [ROADMAP](./ROADMAP.md) · 架构见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) ·
 > 排障见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
@@ -13,6 +14,7 @@
 ![CI](https://github.com/carsonz/hublane/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/carsonz/hublane/badge)](https://securityscorecards.dev/viewer/?uri=github.com/carsonz/hublane)
 
 ---
 
@@ -124,7 +126,13 @@ curl -fsSL https://opencode.ai/install | bash
 sudo bash ~/hublane/install.sh && exec zsh
 sudo bash ~/hublane/install.sh --dry-run      # 只看将执行的步骤, 不做改动
 sudo bash ~/hublane/install.sh -y --skip-verify   # 非交互
+sudo bash ~/hublane/install.sh --renew-certs      # 部署后续期叶证书(保留 CA)
+sudo bash ~/hublane/install.sh --renew-ca         # 连同 CA 一起续期, 随后重装信任
 ```
+
+> `--renew-certs` / `--renew-ca` 会透传给 `hublane.py` 的同一套实现，不必再手敲命令。
+> 安装脚本还会给 Firefox 写入 `policies.json`（Firefox 用自己的证书库，不走系统信任库），
+> 未检测到 Firefox 时自动跳过。
 
 脚本会：部署到 `/opt/hublane`（**已有的 `config.json` 不会被覆盖**，新版默认配置另存为 `config.json.new` 供你合并）→ 配置校验 → 安装 CA 到系统信任库（Debian 系 `update-ca-certificates`，RPM 系自动回退 `update-ca-trust`）→ 写入 systemd 服务（`Restart=always`）→ 注入代理变量到 shell 配置（按 passwd 里登记的登录 shell 判定：zsh 写 `~/.zshenv`，bash 写 `~/.bashrc`）→ 验证三条目标命令。
 
@@ -175,8 +183,14 @@ curl http://127.0.0.1:28898/status    # 指标 JSON：上游/DoH 健康度、延
 curl http://127.0.0.1:28898/requests  # 最近请求样本（域名/上游/结果/耗时/字节）
 curl http://127.0.0.1:28898/diag      # 诊断包：版本+配置(打码)+状态+日志尾部，报障贴这个
 curl http://127.0.0.1:28898/pac       # PAC 自动代理脚本
+curl http://127.0.0.1:28898/hosts     # 已验真 IP（hosts 格式，只读；hublane 不写系统 hosts）
 curl http://127.0.0.1:28898/healthz   # 存活探针（唯一不需要 token 的端点）
 curl -X POST http://127.0.0.1:28898/reload   # 热重载配置（POSIX 也可 kill -HUP）
+curl -X POST http://127.0.0.1:28898/refresh  # 立即重跑验真+探测（切换网络后点这个）
+curl -X POST http://127.0.0.1:28898/pause    # 暂停接管（服务不停，全部纯隧道直通）
+curl -X POST http://127.0.0.1:28898/resume   # 恢复接管
+python hublane.py --check-update      # 只查有没有新版本，不下载
+python hublane.py --update            # 拉最新版并替换（先备份，校验失败自动回滚）
 sudo journalctl -u hublane -f        # 日志（WSL）
 python hublane.py --check            # 配置校验
 python hublane.py --renew-certs      # 续期叶证书(保留 CA); --renew-ca 连 CA 一起换
@@ -208,6 +222,9 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 | `per_host_upstreams` | 按域名的上游链，支持通配：`{"github.com": ["watt","direct"], "*.example.com": ["chain"]}`；出现过的域名自动视为受管域名 |
 | `extra_hosts` / `extra_upstreams` | 额外受管站点及其上游链 |
 | `custom_mirrors` | 自定义镜像模板 `{"名字": "https://host/{path}"}` |
+| `preset_ips` | 预置 IP 候选池 `{"域名": ["1.2.3.4", "2001:db8::1"]}`；与 DoH 结果、历史已验真 IP 三者合并后**统一重新验真**，换网络后失效的自动淘汰 |
+| `abort`（上游名） | 伪上游：命中即**快速失败**——不发起连接、不消耗超时，用于"被封且无替代"的域名 |
+| `verbose` | `true` 时强制 DEBUG 级日志（默认 `false`；日常级别由 `log_level` 决定） |
 | `chain_port` / `chain_socks_port` | 你的节点代理端口（Clash 7890 / v2rayN 10809） |
 | `enable_socks5` / `enable_ipv6` | SOCKS5 入站 / IPv6 |
 | `metrics_enabled` / `metrics_port` / `metrics_host` | 指标面板开关 / 端口 / 绑定地址（绑非本机地址必须设 token） |

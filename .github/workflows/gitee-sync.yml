@@ -1,0 +1,95 @@
+name: Gitee Sync
+
+# 做法 2（ROADMAP v0.2.0 第 8 条）：GitHub 打 tag 发布后, 把 Release 附件同步到 Gitee,
+# 补上 Gitee 镜像仓库"只同步代码与 tag、不含 Release 附件"的最后一公里。
+#
+# 前置（已在 GitHub 仓库 Settings → Secrets and variables → Actions 配置）:
+#   GITEE_TOKEN  Gitee 私人令牌（仓库读写权限, projects）
+#   GITEE_REPO   目标 Gitee 仓库路径, 如 carsonz_admin/hublane
+#
+# 注意: 当前 Gitee 已设为 GitHub 镜像, 代码与 tag 会自动同步, 故"推 git 镜像"那步
+#       通常无操作; 该步失败（镜像仓库拒绝手动推送）不阻断, 关键交付是下面的 Release 附件。
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要同步到 Gitee 的 tag (留空则用最新 release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read        # 仅读 GitHub Release 附件, 不写
+
+jobs:
+  sync:
+    name: 同步到 Gitee (git 镜像 + Release 附件)
+    runs-on: ubuntu-latest
+    steps:
+      - name: 确定 tag
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${{ github.event.inputs.tag }}" ]; then
+            TAG="${{ github.event.inputs.tag }}"
+          else
+            TAG="${{ github.event.release.tag_name }}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: 检出代码 (完整历史, 用于推镜像)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.meta.outputs.tag }}
+
+      - name: 推 git 镜像到 Gitee
+        continue-on-error: true
+        env:
+          GITEE_REPO: ${{ secrets.GITEE_REPO }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+        run: |
+          git config --global user.email "bot@hublane.local"
+          git config --global user.name "hublane-sync"
+          git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          git push gitee --mirror
+
+      - name: 下载 GitHub Release 附件
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p assets
+          gh release download "${{ steps.meta.outputs.tag }}" -D assets
+          ls -la assets
+
+      - name: 在 Gitee 建 Release 并上传附件
+        env:
+          GITEE_REPO: ${{ secrets.GITEE_REPO }}
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          BODY="Synced from GitHub release $TAG"
+          JSON_BODY="$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$BODY")"
+          # 创建 release（已存在则忽略报错）
+          curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases" \
+            -H "Authorization: token ${GITEE_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":${JSON_BODY},\"prerelease\":false}" || true
+          # 取 release id（无论新建还是已存在）
+          RID="$(curl -s "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}" \
+            -H "Authorization: token ${GITEE_TOKEN}" \
+            | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id",""))')"
+          echo "Gitee release id: $RID"
+          # 上传附件
+          for f in assets/*; do
+            echo "uploading $f"
+            curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/${RID}/attach_files" \
+              -H "Authorization: token ${GITEE_TOKEN}" \
+              -F "file=@${f}"
+          done

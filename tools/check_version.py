@@ -12,7 +12,7 @@
   3. pyproject.toml 的 dynamic 必须确实指向 hublane.VERSION;
   4. 若传入 tag, tag 必须与 hublane.VERSION 一致。
 
-用法:  python3 tools/check_version.py v0.1.1     # CI 传 tag
+用法:  python3 tools/check_version.py vX.Y.Z     # CI 传 tag, 必须等于 hublane.VERSION
        python3 tools/check_version.py            # 只校验单一来源
 退出码: 0 通过, 1 不通过(并打印原因)
 """

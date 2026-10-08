@@ -211,12 +211,12 @@
 
 ---
 
-## v0.2.0 —— 分发补齐与实现收口（计划中）
+## v0.2.0 —— 分发补齐与实现收口（已实现，待 Windows 验证）
 
 主题：**"把承诺过但没兑现的项清干净，再让别人不用折腾就能装上"**。
 0.1.0 已把核心做完，剩下的是收口与最后一公里。
 
-- [ ] **1. 收口实现与文档不一致**（0.1.0 文档里写了、代码里没兑现的项，优先做）
+- [x] **1. 收口实现与文档不一致**（0.1.0 文档里写了、代码里没兑现的项，优先做）
   - `enable_socks5` 目前只用于面板与 `/status` 展示，`handle_client` 始终嗅探 SOCKS5
     —— 要么让它真正生效，要么从配置与文档中删掉。
   - `verbose` 写在 `DEFAULTS` 里但全代码无读取点 —— 接上或删除。
@@ -227,7 +227,7 @@
   - 覆盖率只出报告，没有 `--fail-under` 门禁，也没有在 PR 上展示。
   - 验收：每条要么有代码与测试，要么从文档中删除；不再出现"文档承诺、代码没有"。
 
-- [ ] **1b. 把新增的验证脚本接进门禁**（2026-10-08 实测后新增）
+- [x] **1b. 把新增的验证脚本接进门禁**
   - `tools/verify_install_sandbox.sh` 与 `tests/test_runtime_e2e.py` 目前只能手动跑，
     应接进 CI（Windows 上跳过 install.sh 沙箱即可），否则重演"安装脚本从未被测过"。
   - 覆盖率门禁 `--fail-under 70`（当前 72%）随第 1 条一起立起来。
@@ -244,24 +244,122 @@
   - 若跑通：CI 增加 Windows exe 产物，**P4 Rust/Go 移植正式关闭**（见"明确不做"）。
 
 - [ ] **3. 分发渠道与可信标识**
-  - OpenSSF Scorecard 工作流 + 徽章（README 目前只有 CI / License / Python 三个）。
-  - scoop bucket / winget manifest / Homebrew formula（官方 tap）—— 属 `[A]`，
-    先按收益评估再决定是否值得维护。
+  - [x] OpenSSF Scorecard 工作流 `.github/workflows/scorecard.yml` + README 徽章。
+  - [ ] scoop bucket / winget manifest / Homebrew formula（官方 tap）—— 属 `[A]`，
+    评估结论见 `docs/EVALUATIONS.md` 第 8 条：**先只做 winget，且排在 exe 之后**
+    （manifest 里要放 exe，exe 没跑通就没意义）。
   - minisign 签名（provenance 已由 attestation 覆盖，签名主要成本在密钥分发）。
 
-- [ ] **4. `[A]` 评估待办**：`--check-update`（只提示新版本、不下载，与"不做自动更新"
+- [x] **4. `[A]` 评估待办**：`--check-update`（只提示新版本、不下载，与"不做自动更新"
   不冲突）、分发 manifest 的维护成本评估。
+
+- [x] **5. 动态已验真 IP 池（借鉴 dev-sidecar 的 DNS 优选）**
+  - 每次运行：先用 DoH 解析目标域名得到 IP 候选，再并发真实 TLS 握手验真，
+    **只有验真成功的 IP 才进入可用列表**；历史运行里本地验真成功过的 IP
+    （来自 `direct` 握手记录、用户 `preset_ips`）一并纳入候选池。
+  - 列表**每次运行动态更新**并落盘 `state.json`，重启即恢复；随网络环境变化而重新评定
+    （这正是"换了网络要能看到新可用清单"的核心诉求）。
+  - 与「不改系统 hosts」底线不冲突：这是纯进程内候选池，绝不写 `/etc/hosts`。
+  - 验收：新增 IP 池模块 + 单测（"验真失败剔除 / 历史可用 IP 复用 / 落盘恢复"）；
+    `--check` 可输出当前 IP 池摘要。
+
+- [x] **6. per_host 规则与 `abort` 表达力（借鉴 dev-sidecar 的 intercepts / abort）**
+  - 6a. 在 `config.json` 沉淀一批**合适的默认规则**（host 级链、通配、`abort` 伪上游），
+    覆盖"被封且无替代 → 快速失败"的典型域名，避免用户逐个试。
+  - 6b. `abort` 伪上游：命中即返回 502 + 单独计数、**不消耗任何超时**；
+    解决"某些网站装了代理反而卡（N×timeout 逐个撞墙）"的抱怨。
+  - 验收：默认规则进 `config.json` + 单测覆盖 `abort` 命中路径；`--check` 校验规则合法性。
+
+- [x] **7. `GET /hosts` 只读端点**
+  - 输出已验真 IP（hosts 格式，受 `metrics_token` 保护），并**明确标注
+    "hublane 不写入系统 hosts"**；给用户"只想用 IP"的低门槛出口。
+  - 验收：端点单测（格式正确、token 保护、只读）。
+
+- [ ] **8. 分发：补齐 Gitee 镜像仓库的 CI 与 Releases**
+  - 现状：`https://gitee.com/carsonz_admin/hublane` 已建库，但**无 CI、无 Releases**；
+    GitHub 打 tag **不会**自动同步到 Gitee（GitHub 无法直推 Gitee；Gitee 的"仓库镜像"
+    仅周期性同步代码与 tag，**不含 Release 附件**）。
+  - 两种做法评估后选用其一（结论写进 `docs/EVALUATIONS.md`）：
+    1. Gitee 仓库设为 GitHub 镜像 + 周期同步：成本低，但 Release 附件不在 Gitee；
+    2. 扩展发布流程：打 tag 后用 `GITEE_TOKEN` 把 git 推到 Gitee 镜像，
+       并调 Gitee API 建 Release、上传 `hublane.py` / `config.json` / 安装脚本等附件。
+  - **推荐做法 2**（保住 Release 附件这一"最后一公里"），新增
+    `.github/workflows/gitee-sync.yml`，secret 用 `GITEE_TOKEN` / `GITEE_REPO`。
+  - 验收：模拟 tag 事件能产出 Gitee Release + 附件；CI 矩阵不退化。
+  - 实现（2026-10-08）：已新增 `.github/workflows/gitee-sync.yml`，挂 `release: published`
+    事件，下载 GitHub Release 附件后调 Gitee API 建 Release 并上传；推 git 镜像那步因
+    Gitee 已设为 GitHub 镜像而设为 `continue-on-error`。待一次真实 tag 验证附件同步。
+
+- [x] **9. 面板"粘贴 URL → 等价命令"小工具（T2-6 低成本版）**
+  - 面板加一个输入框（纯字符串变换、不联网）：输入任意 URL，输出
+    `curl` / `git clone` / `npm config` / `pip config` 的等价一行命令。
+  - 动机：`install.sh` 只给 shell 注入 `http_proxy`，**覆盖不到 Windows 服务模式与
+    不走 shell 的 GUI 程序**；给可复制的一行命令是更低成本的覆盖。
+  - 验收：变换逻辑单测（不依赖网络）；面板可交互。
+
+- [x] **10. 面板顶部「刷新」（应对切换网络）、「暂停/恢复」按钮**
+  - 页面顶部加手动刷新按钮：切换网络后，主动重跑 IP 池评估 + 上游探测 +
+    面板数据刷新，而不必等后台 120s 周期或重启进程。
+  -「暂停/恢复」可以在不关闭服务的前提下，停止代理或者继续执行代理
+  - 验收：按钮触发一次全量重评估；面板 5s 自刷不受影响。
+
+- [x] **11. PAC 有效性验证（避免非代理网址进代理）**
+  - 现状：`/pac` 输出精确 + 通配规则；需补**自动化校验**：PAC 命中测试
+    （给定一组 URL，断言哪些走代理、哪些直连），确保非受管域名绝不进代理。
+  - 验收：新增 PAC 单测（覆盖精确 / 通配 / 负例）；README 补 PAC 命中说明。
+
+- [ ] **12. `update` 功能（除 `--check-update` 提示外，真正能更新）**
+  - `--check-update` 只提示新版本（不下载，与"不做自动更新"不冲突）；
+  - 新增 `--update`：拉取最新 `hublane.py` / `config.json` / 安装脚本（含校验与回滚），
+    更新后提示是否重跑安装器。属 `[A]`：需先评估"从哪拉 / 完整性校验 / 失败回滚"。
+  - 验收：dry-run 与真实更新均有单测；校验或签名缺失时拒绝更新。
+
+- [x] **13. 上游健康度表列头可点击排序**
+  - 面板「上游健康度」表列名可点击切换升序 / 降序（延迟 / 成功率 / 最近样本等）。
+  - 验收：前端排序逻辑单测（或至少手动验证三种排序）。
+
+---
+
+## 需 Windows 平台验证（单独挑出）
+
+以下几项**逻辑已在 Linux 侧实现并有单测覆盖，但必须在真实 Windows 上跑过才算完成** ——
+Linux 无法替代验证，因此不随本次一起勾掉。验证条件：Windows 11 + 管理员会话。
+
+- [ ] **1. 第 2 条：Windows 免 Python 单文件 exe**
+  - 现状：`tools/build_exe.sh --smoke` 在 Linux 上已跑通"打包 → 生成证书 → 校验证书链"。
+  - 待验：体积 / 杀软误报；`--service` 在打包产物里是否可用；证书生成对 `openssl.exe`
+    的依赖（用户没装 Git for Windows 时如何兜底）。
+  - 跑通后：CI 增加 Windows exe 产物，并据此推进 winget manifest（第 3 条）。
+
+- [ ] **2. Windows 安装脚本缺的两项能力（本次只在 Linux 侧做了）**
+  - `install.sh` 已实现 `--renew-certs` / `--renew-ca` 透传与 Firefox `policies.json`；
+    **`install-windows.bat` / `install-windows-service.bat` 的同款能力尚未实现**。
+  - 待验：`.bat` 在 cmd 下有"中文 + ASCII 括号破坏块解析"的历史坑（见排障文档），
+    必须实机验证；Firefox 策略要写到
+    `%ProgramFiles%\Mozilla Firefox\distribution\policies.json`，且无 Firefox 时应正确跳过。
+
+- [ ] **3. 面板三项 + 暂停/恢复的浏览器实测**
+  - 列头排序、URL → 命令工具、立即刷新、暂停/恢复四个交互：逻辑已由单测覆盖，
+    但**渲染与点击**要在 Windows 的 Chrome / Edge 上看一眼（JS 未做自动化测试）。
+
+- [ ] **4. `--update` 在 Windows 服务模式下的回滚**
+  - 单测覆盖了"写入后 `--check` 不过则回滚"；但 Windows 上 `hublane.py` 正被服务占用时
+    能否替换、替换后是否需要重启服务，需在服务模式下实测。
+
+- [ ] **5. Gitee 同步工作流的一次真实 tag 验证**
+  - `.github/workflows/gitee-sync.yml` 已写好，但从未真正跑过：
+    需打一个 tag，确认 Gitee 上出现同名 Release 且附件齐全。
 
 ---
 
 ## v0.3.0 —— 跨平台与结构治理（计划中 / 待评估）
 
-- [ ] **5. macOS 支持**（`[A]`：无 macOS 机器持续验证前不做）
+- [ ] **14. macOS 支持**（`[A]`：无 macOS 机器持续验证前不做）
   - launchd plist + Keychain 信任（`security add-trusted-cert`）+ `networksetup`；
     核心代码已跨平台，差异集中在安装器与信任库。
   - 触发条件：出现明确需求（issue 或自用）时再起，届时可复用现有测试。
 
-- [ ] **6. 单文件拆分（源码拆包 + 构建期拼回单文件）**
+- [ ] **15. 单文件拆分（源码拆包 + 构建期拼回单文件）**
   - **2026-10-08 复评结论：暂不拆分。** 实测数据（`hublane.py` 2898 行 / 2345 纯代码行
     / 149 个函数 / 130 个顶层定义）：
     - 函数长度分布已经很平 —— ≤10 行 73 个、11–30 行 61 个、31–80 行 12 个、
@@ -279,7 +377,7 @@
     `panel_html()` 的 HTML/CSS 抽成模块级模板常量（139 行 → 约 15 行），
     以及把 Windows 专属的 `_win_service()`（83 行）单独成文件。
 
-- [ ] **7. 覆盖率目标提到 80%**：0.2.0 先把 70% 门禁立起来，稳定后再抬。
+- [ ] **16. 覆盖率目标提到 80%**：0.2.0 先把 70% 门禁立起来，稳定后再抬。
 
 ---
 

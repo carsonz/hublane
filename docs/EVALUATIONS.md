@@ -100,6 +100,62 @@ WSL 与 Windows —— **没有 macOS 机器可供持续验证**，加了也是"
 
 ---
 
+## 7. `--check-update` / `--update`（ROADMAP v0.2.0 第 4 / 12 条）
+
+- **`--check-update` 结论：做。** 它只查询 GitHub Release API 并打印"有没有新版本"，
+  不下载、不改动任何文件，与「不做自动更新」这条底线不冲突（底线防的是"替用户做决定"，
+  不是"告诉用户有新版本"）。
+- **`--update` 结论：做，但明确它的能力边界。** 三条硬约束：
+  1. 走内部 opener（绕过 `http_proxy`），**不经过 hublane 自己**，否则会绕回本机形成自引用；
+     代价是它享受不到 hublane 的加速 —— 在受限网络里大概率直接失败，这是**预期行为**，
+     报错要写清楚"可能是网络受限，请到 Release 页手动下载"。
+  2. 写入前做形状校验（必须是含 `def main(` 与 `VERSION` 的 Python，且长度够），
+     写完后跑一遍新代码的 `--check`，任一不过就**整体回滚**到 `.bak`。
+  3. **`config.json` 不覆盖**，新版另存 `config.json.new` —— 与 `install.sh` 的升级契约一致。
+- 不做的部分：不做签名校验（密钥分发成本高于收益，provenance 已由 GitHub attestation 覆盖），
+  因此 `--update` 的可信度上限就是"HTTPS + 仓库归属"，重要用途仍应手动下载核对 `SHA256SUMS`。
+
+## 8. 分发 manifest 的维护成本（scoop / winget / Homebrew）
+
+- 参照系：**dev-sidecar 已进 winget**，装机量的边际收益是真实存在的。
+- 成本不在"写 manifest"（每个约 30 行 YAML/Ruby），而在**长期维护**：
+  每个渠道都要跟版本、要处理校验和被拒的 PR（winget 对 publisher 验证较严）。
+  三个渠道加起来约等于"每发一版多一件事"。
+- **结论：先只做 winget**（Windows 用户占比最高，且 dev-sidecar 已验证这条路走得通），
+  scoop 与 Homebrew 等出现实际 issue 需求再说。winget manifest 里只放 exe（v0.2.0 第 2 条
+  的 Windows 打包跑通之后才有意义），**因此本项排在 exe 之后**。
+
+## 9. ECH（Encrypted Client Hello）—— 不做，标准库约束下不可实现
+
+- 背景：dev-sidecar 2.3.0 加了 ECH；它比早期"改 SNI 伪装"（`sni:'baidu.com'`）正当得多 ——
+  ECH 是标准 TLS 扩展，**隐藏 SNI 但照样完整校验证书**，与 hublane「不绕过校验」的底线兼容，
+  理论上也优于改 SNI。这是本项值得评估的原因。
+- **结论：不做。** 查 Python 3.14.8 的 `ssl` 文档全文，**没有任何 ECH 相关 API**；
+  CPython 侧自 2021 年的 issue #89730 起长期停留在 API 设计讨论。
+  在「纯标准库、零第三方依赖」硬约束下无法实现。
+- 触发重评的条件：CPython 的 `ssl` 模块暴露 ECH 接口（届时可给 `direct` 上游加一个开关）。
+
+## 10. "安全模式"（dev-sidecar 的无证书降级档）—— 对 hublane 不成立
+
+- dev-sidecar 的安全模式 = 不装证书、只做 DNS 优选 + 测速，功能弱但零信任成本。
+  它能成立是因为它**最差也只是慢**。
+- **hublane 不成立**：核心用例 `raw.githubusercontent.com` 直连必被 TCP RST，
+  不 MITM 换源就**一点办法都没有**。照抄等于砍掉 hublane 唯一不可替代的价值。
+- **结论：不做。** 仅保留一个低优先级想法：作为"证书安装失败时的降级运行档"
+  （只跑 `direct`/`chain`、不换源），让代理不至于完全起不来 —— 排 P3，不为它改架构。
+
+## 11. Gitee 同步：两种做法（ROADMAP v0.2.0 第 8 条）
+
+- 做法 1（Gitee 仓库设为 GitHub 镜像 + 周期同步）：成本近乎为零，但**只同步代码与 tag，
+  不含 Release 附件** —— 用户仍然拿不到 `hublane.py` / 安装脚本，最后一公里没解决。
+- 做法 2（CI 里主动推）：打 tag 后用 `GITEE_TOKEN` 推 git 镜像，并调 Gitee API
+  建 Release、上传附件。**成本是维护一个 `GITEE_TOKEN` secret。**
+- **结论：采用做法 2**（已实现为 `.github/workflows/gitee-sync.yml`，挂 `release: published`）。
+  其中"推 git 镜像"那步设为 `continue-on-error`：仓库已是 GitHub 镜像时它通常无操作，
+  且镜像仓库可能拒收手动推送 —— 失败不应阻断真正有价值的附件同步。
+
+---
+
 ## 维护提示
 
 - 本文档与 `ROADMAP.md` 的 `[A]` 项一一对应；实施其中任一项时把对应的 `[A]` 改成 `[x]`。

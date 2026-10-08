@@ -88,5 +88,5 @@
   "log_level": "INFO",
   "log_format": "text",
   "sample_size": 200,
-  "verbose": true
+  "verbose": false
 }

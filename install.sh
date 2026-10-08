@@ -11,6 +11,11 @@ ASSUME_YES=0
 DRY_RUN=0
 SKIP_VERIFY=0
 RESET_CONFIG=0
+# v0.2.0 第 1 条: 把证书续期透传给 hublane.py 自带的实现
+# (此前路线图承诺"透传 --renew"从未实现, 续期只能手敲命令;
+#  这里复用 hublane.py 的 gen_certs, 与手敲 --renew-certs/--renew-ca 完全同一条代码路径)
+RENEW_CERTS=0
+RENEW_CA=0
 # git push 不走 hublane(它只做匿名只读加速, 见 CHANGELOG 0.1.1 的 Security 条目),
 # 应当走 SSH。但受限网络常有两个坑: github.com 的 DNS 被劫持到 127.0.0.1、22 端口
 # 被封, 于是 ssh 连到本机 sshd 被拒。故按需把 git@github.com 切到官方的
@@ -22,6 +27,8 @@ for arg in "$@"; do
     --dry-run)    DRY_RUN=1 ;;
     --skip-verify) SKIP_VERIFY=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
+    --renew-certs) RENEW_CERTS=1 ;;
+    --renew-ca)    RENEW_CA=1 ;;
     --git-ssh=*)
       GIT_SSH_MODE="${arg#*=}"
       case "$GIT_SSH_MODE" in
@@ -38,6 +45,8 @@ for arg in "$@"; do
       --reset-config 用发行包里的默认配置**覆盖**已有的 config.json
                   (默认行为是: 保留你的 config.json, 把新版另存为
                    config.json.new, 由你自己合并 —— 升级不会丢配置)
+      --renew-certs 部署后续期叶证书(保留 CA, 系统里已信任的 CA 无需重装)
+      --renew-ca    部署后连同 CA 一起续期(随后会重新安装信任)
       --git-ssh=auto|always|never
                   是否把 Git 对 GitHub 的访问切到 ssh.github.com:443。
                   auto(默认)= 仅在检测到 github.com 被劫持到本机/私有地址、
@@ -203,6 +212,17 @@ fi
 
 install -m 0755 "$SRC/hublane.py"   "$DEST/hublane.py"
 
+# ---- v0.2.0 第 1 条: 透传 --renew-certs / --renew-ca ----
+# 放在部署之后、装信任之前: 续出来的 CA 正好由下面的 [4/7] 装进系统信任库,
+# 用户不必再手敲一次命令。
+if [ "$RENEW_CA" = 1 ] || [ "$RENEW_CERTS" = 1 ]; then
+  RENEW_FLAG="--renew-certs"
+  [ "$RENEW_CA" = 1 ] && RENEW_FLAG="--renew-ca"
+  echo "==> [2.5/7] 按 $RENEW_FLAG 续期证书"
+  "$PY" "$DEST/hublane.py" --config "$CFG" "$RENEW_FLAG" || exit 1
+  [ "$RENEW_CA" = 1 ] && echo "    CA 已更换, 下一步 [4/7] 会重新安装信任"
+fi
+
 echo
 echo "==> [3/7] 配置校验 (P2)"
 "$PY" "$DEST/hublane.py" --config "$CFG" --check || exit 1
@@ -219,6 +239,32 @@ else
   echo "    [警告] 未找到 update-ca-certificates / update-ca-trust"
   echo "           请手动信任 $DEST/ca.crt, 否则 HTTPS 会被浏览器/curl 判为不可信"
 fi
+
+# ---- v0.2.0 第 1 条: Firefox 用自己的证书库, 用 policies.json 自动导入本地 CA ----
+# 此前只 echo 一句"请手动导入", 承诺的 policies.json 从未实现。
+# 用的是官方策略 Certificates.Install(把 CA 装进 Firefox 自己的库),
+# 比 security.enterprise_roots 更可靠: 后者依赖操作系统信任库, 各发行版差异很大。
+install_firefox_policy() {
+  local ca="$1"
+  if ! command -v firefox >/dev/null 2>&1 \
+     && [ ! -d /etc/firefox/policies ] && [ ! -d /usr/lib/firefox/distribution ] \
+     && [ ! -d /snap/firefox/current/usr/lib/firefox/distribution ]; then
+    echo "    [提示] 未检测到 Firefox, 跳过 policies.json"
+    return 0
+  fi
+  local body='{"policies":{"Certificates":{"Install":["%s"]}}}'
+  if mkdir -p /etc/firefox/policies 2>/dev/null; then
+    printf '%s\n' "$(printf "$body" "$ca")" > /etc/firefox/policies/policies.json 2>/dev/null \
+      && echo "    已写入 Firefox 策略: /etc/firefox/policies/policies.json"
+  fi
+  for d in /usr/lib/firefox/distribution /usr/lib64/firefox/distribution \
+           /opt/firefox/distribution /snap/firefox/current/usr/lib/firefox/distribution; do
+    [ -d "$d" ] || continue
+    printf '%s\n' "$(printf "$body" "$ca")" > "$d/policies.json" 2>/dev/null \
+      && echo "    已写入 Firefox 策略: $d/policies.json"
+  done
+}
+install_firefox_policy "$DEST/ca.crt"
 
 echo "==> [5/7] 写入 systemd 服务"
 cat > /etc/systemd/system/hublane.service <<UNIT

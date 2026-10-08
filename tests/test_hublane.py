@@ -193,7 +193,8 @@ class TestUtf8Console(unittest.TestCase):
         """
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         env = dict(os.environ, PYTHONIOENCODING="cp1252")
-        for args in ([], ["v0.1.1"]):
+        # 别写死版本号: 发版后它会与 hublane.VERSION 不符, 这个测试就会假失败
+        for args in ([], ["v" + H.VERSION]):
             proc = subprocess.run(
                 [sys.executable, os.path.join(root, "tools", "check_version.py")]
                 + args, env=env, capture_output=True, cwd=root)
@@ -1437,6 +1438,228 @@ class TestMisc(unittest.TestCase):
             H._ustat.clear()
         H.load_state()
         self.assertIn(H._u_key("raw", "ghproxy_com"), H._ustat)
+
+
+class TestV020Features(unittest.TestCase):
+    """v0.2.0 新增项的单元覆盖
+
+    原则: 全部离线。涉及网络的地方用桩替换, 保证 CI(无外网)可跑。
+    """
+    def setUp(self):
+        H.CONFIG.clear()
+        H.CONFIG.update(H.DEFAULTS)
+
+    # ---- 第 1 条: verbose / enable_socks5 ----
+    def test_verbose_forces_debug(self):
+        old = H.log.level
+        try:
+            H.CONFIG["verbose"] = True
+            H.setup_logging()
+            self.assertEqual(H.log.level, logging.DEBUG)
+            H.CONFIG["verbose"] = False
+            H.CONFIG["log_level"] = "INFO"
+            H.setup_logging()
+            self.assertEqual(H.log.level, logging.INFO)
+        finally:
+            H.log.setLevel(old)
+
+    def test_verbose_default_is_false(self):
+        # 默认 true 会把 DEBUG 访问日志全刷进文件, 既吵又占空间
+        self.assertFalse(H.DEFAULTS["verbose"])
+
+    # ---- 第 5 条: 动态已验真 IP 池 ----
+    def test_is_ip(self):
+        self.assertTrue(H._is_ip("1.2.3.4"))
+        self.assertTrue(H._is_ip("2001:db8::1"))
+        for bad in ("", "not-an-ip", "1.2.3.4/24", "a b"):
+            self.assertFalse(H._is_ip(bad), bad)
+
+    def test_validate_preset_ips(self):
+        errs = []
+        H._validate_preset_ips({"preset_ips": {"a.test": ["1.2.3.4"]}}, errs)
+        self.assertEqual(errs, [])
+        errs = []
+        H._validate_preset_ips({"preset_ips": {"a.test": ["not-an-ip"]}}, errs)
+        self.assertTrue(errs, "非法 IP 必须报错")
+        errs = []
+        H._validate_preset_ips({"preset_ips": []}, errs)
+        self.assertTrue(errs, "非字典必须报错")
+
+    def test_pick_ips_merges_preset_history_and_doh(self):
+        H.CONFIG["preset_ips"] = {"a.test": ["10.0.0.1"]}
+        with H._ipcache_lock:
+            H._ipcache["a.test"] = (time.time() - 10, [["10.0.0.2", socket.AF_INET]])
+        seen = []
+        old_r, old_v = H.doh_resolve, H._verify_ip
+        H.doh_resolve = lambda host: [("10.0.0.3", socket.AF_INET)]
+        H._verify_ip = lambda host, ip, fam, timeout: (seen.append(ip) or 0.01)
+        try:
+            got = H.pick_ips("a.test", force=True)
+        finally:
+            H.doh_resolve, H._verify_ip = old_r, old_v
+            with H._ipcache_lock:
+                H._ipcache.pop("a.test", None)
+        self.assertEqual(sorted(seen), ["10.0.0.1", "10.0.0.2", "10.0.0.3"])
+        self.assertEqual([p[0] for p in got], ["10.0.0.1", "10.0.0.2", "10.0.0.3"])
+
+    def test_pick_ips_drops_dead_history(self):
+        with H._ipcache_lock:
+            H._ipcache["b.test"] = (time.time() - 10, [["10.0.0.9", socket.AF_INET]])
+        old_r, old_v = H.doh_resolve, H._verify_ip
+        H.doh_resolve = lambda host: []
+        H._verify_ip = lambda *a, **k: None          # 全部验真失败
+        try:
+            got = H.pick_ips("b.test", force=True)
+        finally:
+            H.doh_resolve, H._verify_ip = old_r, old_v
+            with H._ipcache_lock:
+                H._ipcache.pop("b.test", None)
+        self.assertEqual(got, [], "有候选却全没验过, 不该复活历史 IP")
+
+    # ---- 第 7 条: GET /hosts ----
+    def test_hosts_text_is_readonly(self):
+        with H._ipcache_lock:
+            H._ipcache["c.test"] = (time.time(), [["1.2.3.4", socket.AF_INET]])
+        try:
+            text = H.hosts_text()
+        finally:
+            with H._ipcache_lock:
+                H._ipcache.pop("c.test", None)
+        self.assertIn("1.2.3.4 c.test", text)
+        self.assertIn("不会写入系统 hosts", text)
+
+    def test_hosts_text_empty_pool(self):
+        self.assertIn("暂无已验真 IP", H.hosts_text())
+
+    def test_ip_pool_summary(self):
+        with H._ipcache_lock:
+            H._ipcache["d.test"] = (time.time(), [["5.6.7.8", socket.AF_INET]])
+        try:
+            text = H.ip_pool_summary()
+        finally:
+            with H._ipcache_lock:
+                H._ipcache.pop("d.test", None)
+        self.assertIn("5.6.7.8", text)
+        self.assertIn("d.test", text)
+
+    # ---- 第 6b 条: abort 伪上游 ----
+    def test_abort_is_known_upstream(self):
+        H.CONFIG["per_host_upstreams"] = {"z.test": ["abort"]}
+        self.assertEqual(H.validate_config(), [])
+
+    def test_abort_fails_fast_without_touching_network(self):
+        before = H.counters_snapshot().get("aborted", 0)
+        ok, errors = H.relay_chain(None, "x.test", "/p", "GET", {}, b"", ["abort"])
+        self.assertFalse(ok)
+        self.assertTrue(any("abort" in str(e) for e in errors))
+        self.assertEqual(H.counters_snapshot().get("aborted", 0), before + 1)
+
+    # ---- 第 10 条: 暂停/恢复 ----
+    def test_pause_makes_managed_host_pass_through(self):
+        try:
+            self.assertTrue(H.should_intercept("github.com"))
+            ok, _msg = H.set_paused(True)
+            self.assertTrue(ok)
+            self.assertFalse(H.should_intercept("github.com"),
+                             "暂停期间不该再接管受管域名")
+            self.assertTrue(H.status_json()  # /status 要能看出处于暂停
+                            and json.loads(H.status_json())["paused"])
+        finally:
+            H.set_paused(False)
+        self.assertTrue(H.should_intercept("github.com"), "恢复后应重新接管")
+
+    def test_pause_btn_switches(self):
+        try:
+            H.set_paused(True)
+            self.assertIn("/resume", H.panel_html())
+            H.set_paused(False)
+            self.assertIn("/pause", H.panel_html())
+        finally:
+            H.set_paused(False)
+
+    # ---- 第 9 条: URL -> 等价命令 ----
+    def test_cmd_for_url_git(self):
+        got = H.cmd_for_url("https://github.com/o/r.git")
+        self.assertTrue(got["ok"])
+        labels = [c["label"] for c in got["commands"]]
+        self.assertIn("git clone", labels)
+        self.assertIn("curl", labels)
+        self.assertIn("http://127.0.0.1:%d" % H.CONFIG["listen_port"], got["proxy"])
+
+    def test_cmd_for_url_plain(self):
+        got = H.cmd_for_url("https://example.com/a.zip")
+        labels = [c["label"] for c in got["commands"]]
+        self.assertNotIn("git clone", labels)
+
+    def test_cmd_for_url_empty(self):
+        self.assertFalse(H.cmd_for_url("")["ok"])
+
+    # ---- 第 11 条: PAC 有效性 ----
+    def test_pac_covers_per_host_exact_domains(self):
+        # 回归: 此前 PAC 只取 GH/RAW/extra, 漏掉 per_host_upstreams 的精确域名,
+        # 于是浏览器走 PAC 时会绕过代理, 配的规则形同虚设。
+        H.CONFIG["per_host_upstreams"] = {"blocked.test": ["abort"]}
+        pac = H.pac_content()
+        self.assertIn('"blocked.test": 1', pac)
+        self.assertIn('"github.com": 1', pac)
+
+    def test_pac_lets_unmanaged_go_direct(self):
+        pac = H.pac_content()
+        self.assertNotIn("baidu.com", pac, "非受管域名绝不能进代理")
+        self.assertIn('return "DIRECT";', pac)
+
+    def test_pac_uses_listen_port(self):
+        H.CONFIG["listen_port"] = 12345
+        self.assertIn("PROXY 127.0.0.1:12345", H.pac_content())
+
+    # ---- 第 4/12 条: 版本比较与更新查询 ----
+    def test_ver_tuple(self):
+        self.assertEqual(H._ver_tuple("v0.2.0"), (0, 2, 0))
+        self.assertTrue(H._ver_tuple("v0.1.1") < H._ver_tuple("v0.2.0"))
+        self.assertTrue(H._ver_tuple("v0.1.1") == H._ver_tuple("0.1.1"))
+
+    def test_check_update_reports_newer_and_current(self):
+        class FakeResp(object):
+            def __init__(self, data):
+                self._d = json.dumps(data).encode("utf-8")
+            def read(self):
+                return self._d
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        class FakeOpener(object):
+            def __init__(self, data):
+                self.d = data
+            def open(self, url, timeout=None):
+                return FakeResp(self.d)
+
+        old = H._OPENER
+        try:
+            H._OPENER = FakeOpener({"tag_name": "v9.9.9", "html_url": "u"})
+            newer = H.check_update()
+            H._OPENER = FakeOpener({"tag_name": "v0.0.1", "html_url": "u"})
+            older = H.check_update()
+        finally:
+            H._OPENER = old
+        self.assertTrue(newer["ok"])
+        self.assertFalse(newer["up_to_date"])
+        self.assertTrue(older["up_to_date"])
+
+    # ---- 日志打码(接 verbose 时暴露的真实缺陷) ----
+    def test_redact_query_masks_token(self):
+        line = 'GET /status?token=supersecret HTTP/1.1'
+        red = H._redact_query(line)
+        self.assertIn("token=***", red)
+        self.assertNotIn("supersecret", red)
+
+    def test_redact_query_leaves_plain_text(self):
+        self.assertEqual(H._redact_query("no token here"), "no token here")
+
+    def test_looks_like_python_rejects_junk(self):
+        self.assertTrue(H._looks_like_python(b"VERSION = '1'\ndef main():\n    pass"))
+        self.assertFalse(H._looks_like_python(b"<html>502</html>"))
 
 
 if __name__ == "__main__":

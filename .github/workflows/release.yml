@@ -108,7 +108,9 @@ jobs:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: hublane ${{ github.event.inputs.tag || github.ref_name }}
           body_path: RELEASE_NOTES.md
-          generate_release_notes: true
+          # 关掉自动生成: GitHub 会把 "What's Changed" 的提交列表追加到 body 后面,
+          # 与 CHANGELOG 段落重复且冗长。正文以 CHANGELOG 为准。
+          generate_release_notes: false
           # 发布资产 = 两个绿色压缩包 + Python 源码包(sdist/wheel) + 校验文件
           # Ubuntu 包用 .tgz, 所以 hublane-*.tar.gz 只命中 sdist, 不会重复
           files: |

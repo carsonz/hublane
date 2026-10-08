@@ -4,10 +4,11 @@ English | [简体中文](./README.zh-CN.md)
 
 > **hublane** — a local relay proxy that makes GitHub reliably reachable from WSL and Windows.
 > Pure Python standard library. Zero third-party dependencies. One codebase, both platforms.
-> Version **0.1.1** — fixes packaging, install and relay issues found by hands-on testing
-> on WSL/Ubuntu + Python 3.13, and adds a mirror chain for github.com (fixes hanging
-> `git clone/pull`). The version lives in exactly one place: `VERSION` in `hublane.py`;
-> the packaging config reads it at build time.
+> Version **0.2.0** — closes the items 0.1.0 documented but never delivered, and adds
+> a dynamic verified-IP pool, an `abort` fast-fail upstream, panel controls
+> (refresh / pause / sortable columns / URL→command), `--check-update` / `--update`,
+> and read-only `GET /hosts`. The version lives in exactly one place: `VERSION` in
+> `hublane.py`; the packaging config reads it at build time.
 > Relay core (streaming, SOCKS5 + HTTP on one port), adaptive upstream chains,
 > the HTML panel with `/status` / `/requests` / `/diag`, the hardening baseline
 > and the install scripts ship together. The Rust/Go
@@ -18,6 +19,7 @@ English | [简体中文](./README.zh-CN.md)
 ![CI](https://github.com/carsonz/hublane/actions/workflows/ci.yml/badge.svg?branch=main&logo=github&label=CI)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/carsonz/hublane/badge)](https://securityscorecards.dev/viewer/?uri=github.com/carsonz/hublane)
 
 ---
 
@@ -188,7 +190,13 @@ curl http://127.0.0.1:28898/status    # metrics JSON: health, latency, counters,
 curl http://127.0.0.1:28898/requests  # recent request samples (host/upstream/result/ms/bytes)
 curl http://127.0.0.1:28898/diag      # diag bundle: version + config (masked) + status + log tail
 curl http://127.0.0.1:28898/pac       # PAC auto-proxy script
+curl http://127.0.0.1:28898/hosts     # verified IPs (hosts format, read-only; hublane never writes /etc/hosts)
 curl http://127.0.0.1:28898/healthz   # liveness probe (the only endpoint that ignores the token)
+curl -X POST http://127.0.0.1:28898/refresh  # re-verify IPs + probe now (after switching networks)
+curl -X POST http://127.0.0.1:28898/pause    # stop intercepting (service keeps running, all traffic tunnels through)
+curl -X POST http://127.0.0.1:28898/resume   # resume intercepting
+python hublane.py --check-update      # check for a newer version only (downloads nothing)
+python hublane.py --update            # fetch latest release (backs up first, rolls back if --check fails)
 curl -X POST http://127.0.0.1:28898/reload   # hot-reload config (POSIX: kill -HUP also works)
 sudo journalctl -u hublane -f        # logs (WSL)
 python hublane.py --check            # config validation
@@ -222,6 +230,9 @@ WSL: `/opt/hublane/config.json`; Windows: `%LOCALAPPDATA%\hublane\config.json`.
 | `per_host_upstreams` | per-domain chains, wildcards supported: `{"github.com": ["watt","direct"], "*.example.com": ["chain"]}`; mentioning a host here also marks it as managed |
 | `extra_hosts` / `extra_upstreams` | additional managed sites and their chain |
 | `custom_mirrors` | custom mirror templates `{"name": "https://host/{path}"}` |
+| `preset_ips` | preset IP candidates `{"host": ["1.2.3.4"]}`; merged with DoH results and previously verified IPs, then **all re-verified** — stale ones drop out when you change networks |
+| `abort` (upstream name) | pseudo-upstream: fail fast — no connection is made and no timeout is spent, for domains that are blocked with no substitute |
+| `verbose` | force DEBUG-level logging when `true` (default `false`; `log_level` is the day-to-day control) |
 | `chain_port` / `chain_socks_port` | your node proxy port (Clash 7890 / v2rayN 10809) |
 | `enable_socks5` / `enable_ipv6` | SOCKS5 inbound / IPv6 |
 | `metrics_enabled` / `metrics_port` / `metrics_host` | panel toggle / port / bind address (non-loopback bind requires a token) |
