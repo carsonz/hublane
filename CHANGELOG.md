@@ -18,7 +18,24 @@
 
 ## [Unreleased]
 
-（暂无）
+### Added
+
+- **安装流程自动配置 Git 的 GitHub SSH 入口**。`git push` 在受限网络里常被两件事
+  卡住：一是 Windows 侧的代理/加速工具把 `github.com` 的 DNS 劫持到 `127.0.0.1`，
+  于是 `ssh` 连的是**本机 sshd**、必然被拒（表现为 `Permission denied (publickey)`，
+  却怎么查密钥都查不出问题）；二是网络封锁 22 端口。现在 `install.sh` 与
+  `install-windows.bat` 各多一步，检测到异常就把 `git@github.com` 指向 GitHub 官方
+  的 `ssh.github.com:443` 入口。也可单独执行 `tools/setup-git-ssh.sh`（Windows 为
+  `tools/setup-git-ssh.ps1`）。
+  默认是 `--git-ssh=auto`：**只在检测到异常时才写**；写入方式是往 `~/.ssh/config`
+  **追加**一段带标记的配置，你原有的内容一律不动，重复执行无副作用；想总写用
+  `always`，不想写用 `--no-git-ssh`。删掉两个标记之间的内容即恢复默认。
+
+### Documentation
+
+- `docs/TROUBLESHOOTING.md` 新增 7e：把 `git push` 失败拆成三种同症状不同因的情况
+  分别给出判据 —— HTTPS 走 hublane 导致 502、DNS 被劫持导致 SSH 连到本机、以及
+  GitHub 分支保护规则拦强推（`GH013`）。
 
 ## [0.1.1] - 2026-10-08
 

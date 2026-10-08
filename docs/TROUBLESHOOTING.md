@@ -225,6 +225,62 @@ sudo bash install.sh --reset-config
 **若保留的旧配置用新版 `hublane.py` 校验不通过，安装会在覆盖任何东西之前中止**，
 并提示你合并 `.new` —— 不会留下装了一半的状态。
 
+## 7e. `git push` 失败：502，或 `Permission denied (publickey)`
+
+两件完全不同的事会表现成同一句话，先分清是哪一种。
+
+**A. HTTPS 远程 + 本机 hublane 代理 → 502（`all upstreams failed`）**
+
+`git push https://github.com/...` 带着你的凭证（`Authorization`），而 hublane 的
+设计范围是**匿名只读**加速：公共镜像拿不到授权、无法代表你写 GitHub，于是逐个
+401，最后 502。这是设计使然而非故障 —— **push 请走 SSH**，或临时摘掉代理：
+
+```bash
+env -u https_proxy -u HTTPS_PROXY git push origin main
+```
+
+**B. 已经用 SSH 却仍 `Permission denied (publickey)`**
+
+先核对密钥是否真的登记在 GitHub 上：
+
+```bash
+curl -s https://github.com/<你的用户名>.keys    # 列出该账号登记的公钥
+ssh-keygen -lf ~/.ssh/id_rsa.pub                # 本地公钥指纹
+```
+
+两边对得上还被拒，多半是 **DNS 被劫持**：某些 Windows 侧的代理/加速工具会把
+`github.com` 解析到 `127.0.0.1`，于是 ssh 连的是**本机 sshd**，当然被拒 ——
+`ssh -v` 里能看到决定性的一行：
+
+```
+debug1: Connecting to github.com [127.0.0.1] port 22.
+```
+
+另外受限网络常封 22 端口。两者都能绕开：改用 GitHub 官方的 `ssh.github.com:443`
+入口（既绕开被劫持的域名，又走通常放行的 443，是官方支持的做法）：
+
+```bash
+bash tools/setup-git-ssh.sh            # 自动检测并写入, 幂等
+bash tools/setup-git-ssh.sh --mode never   # 只想看判定结果、不写入
+```
+
+它往 `~/.ssh/config` **追加**一段带标记的配置（`Host github.com` →
+`ssh.github.com:443`），`git@github.com:...` 这种远程随即生效，你原有的配置不会
+被动。删掉 `# >>> hublane: GitHub SSH over 443 >>>` 两个标记之间的内容即可恢复
+默认。安装脚本会自动做这一步（默认只在检测到异常时写；`--no-git-ssh` 跳过，
+`--git-ssh=always` / `--git-ssh-always` 强制写）。
+
+验证：
+
+```bash
+ssh -T git@github.com    # 应看到 Hi <用户名>! You've successfully authenticated
+```
+
+**C. `GH013 ... Cannot force-push to this branch`**
+
+这是 GitHub 仓库的**分支保护规则**在拦，和 hublane、和网络都无关。改用普通合并
+提交推送即可（别用 `--force`）。
+
 ## 8. 想彻底重来
 
 ```bash

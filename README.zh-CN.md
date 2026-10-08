@@ -298,6 +298,11 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
   （`git remote set-url origin git@github.com:OWNER/REPO.git`），或单条命令绕过代理
   （`git -c http.proxy= -c https.proxy= push`）。匿名的 `git clone` / `fetch` 不受影响，
   仍然优先走镜像。
+- **装完就能 `git push`**：受限网络常把 `github.com` 的 DNS 劫持到 `127.0.0.1`，
+  于是 `ssh` 连到的是**本机 sshd**、必然被拒（看起来像密钥没配好），或者干脆封掉
+  22 端口。安装脚本的最后一步会自动检测，必要时把 `git@github.com` 指向 GitHub
+  官方的 `ssh.github.com:443` 入口；也可单独运行 `bash tools/setup-git-ssh.sh`
+  （Windows 为 `tools/setup-git-ssh.ps1`）。排查见 `docs/TROUBLESHOOTING.md` 7e。
 - **若你曾通过 hublane 使用过 GitHub 个人访问令牌（PAT），请 revoke 并重新签发**。
   旧版本会把令牌转发给第三方镜像运营方；已泄漏的凭证无法追回，轮换是唯一解。
 - 重要用途请自行校验 checksum。

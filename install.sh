@@ -11,12 +11,24 @@ ASSUME_YES=0
 DRY_RUN=0
 SKIP_VERIFY=0
 RESET_CONFIG=0
+# git push 不走 hublane(它只做匿名只读加速, 见 CHANGELOG 0.1.1 的 Security 条目),
+# 应当走 SSH。但受限网络常有两个坑: github.com 的 DNS 被劫持到 127.0.0.1、22 端口
+# 被封, 于是 ssh 连到本机 sshd 被拒。故按需把 git@github.com 切到官方的
+# ssh.github.com:443 入口。
+GIT_SSH_MODE=auto
 for arg in "$@"; do
   case "$arg" in
     -y|--yes)     ASSUME_YES=1 ;;
     --dry-run)    DRY_RUN=1 ;;
     --skip-verify) SKIP_VERIFY=1 ;;
     --reset-config) RESET_CONFIG=1 ;;
+    --git-ssh=*)
+      GIT_SSH_MODE="${arg#*=}"
+      case "$GIT_SSH_MODE" in
+        auto|always|never) ;;
+        *) echo "错误: --git-ssh 只接受 auto / always / never" >&2; exit 2 ;;
+      esac ;;
+    --no-git-ssh) GIT_SSH_MODE=never ;;
     -h|--help)
       cat <<'USAGE'
 用法: sudo bash install.sh [选项]
@@ -26,6 +38,11 @@ for arg in "$@"; do
       --reset-config 用发行包里的默认配置**覆盖**已有的 config.json
                   (默认行为是: 保留你的 config.json, 把新版另存为
                    config.json.new, 由你自己合并 —— 升级不会丢配置)
+      --git-ssh=auto|always|never
+                  是否把 Git 对 GitHub 的访问切到 ssh.github.com:443。
+                  auto(默认)= 仅在检测到 github.com 被劫持到本机/私有地址、
+                  或 22 端口不通时才写; always= 总是写; never= 不写。
+                  --no-git-ssh 等价于 never。
   -h, --help       显示本帮助
 USAGE
       exit 0 ;;
@@ -36,7 +53,8 @@ done
 if [ "$DRY_RUN" = 1 ]; then
   echo "(dry-run) 将执行: 选定 Python -> 部署到 $DEST(已有 config.json 会保留,"
   echo "(dry-run)         新版另存 config.json.new) -> 生成本地 CA/证书 -> 配置校验 -> "
-  echo "(dry-run)         安装 CA 到系统信任库 -> 写入 systemd 服务 -> 注入 shell 代理变量 -> 验证"
+  echo "(dry-run)         安装 CA 到系统信任库 -> 写入 systemd 服务 -> 注入 shell 代理变量 -> "
+  echo "(dry-run)         按需配置 Git 的 GitHub SSH 入口(ssh.github.com:443) -> 验证"
   echo "(dry-run) 未做任何改动。"
   exit 0
 fi
@@ -133,7 +151,7 @@ if [ -f "$DEST/hublane.py" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ]; then
   esac
 fi
 
-echo "==> [1/6] 选定 Python 解释器"
+echo "==> [1/7] 选定 Python 解释器"
 # 提前到部署之前选好: 下面要先用新代码校验"最终会生效的那份配置",
 # 校验不通过就必须在覆盖 hublane.py 之前中止, 否则会留下半安装状态。
 PY=""
@@ -145,7 +163,7 @@ if [ -z "$PY" ]; then echo "    错误: 未找到 python3"; exit 1; fi
 echo "    Python = $PY  ($("$PY" -V 2>&1))"
 
 echo
-echo "==> [2/6] 部署文件到 $DEST"
+echo "==> [2/7] 部署文件到 $DEST"
 mkdir -p "$DEST"
 gen_certs "$DEST"
 
@@ -186,10 +204,10 @@ fi
 install -m 0755 "$SRC/hublane.py"   "$DEST/hublane.py"
 
 echo
-echo "==> [3/6] 配置校验 (P2)"
+echo "==> [3/7] 配置校验 (P2)"
 "$PY" "$DEST/hublane.py" --config "$CFG" --check || exit 1
 
-echo "==> [4/6] 安装本地 CA 到系统信任库"
+echo "==> [4/7] 安装本地 CA 到系统信任库"
 if command -v update-ca-certificates >/dev/null 2>&1; then
   cp "$DEST/ca.crt" /usr/local/share/ca-certificates/hublane-local-ca.crt
   update-ca-certificates 2>&1 | tail -2
@@ -202,7 +220,7 @@ else
   echo "           请手动信任 $DEST/ca.crt, 否则 HTTPS 会被浏览器/curl 判为不可信"
 fi
 
-echo "==> [5/6] 写入 systemd 服务"
+echo "==> [5/7] 写入 systemd 服务"
 cat > /etc/systemd/system/hublane.service <<UNIT
 [Unit]
 Description=hublane relay proxy for WSL
@@ -228,7 +246,7 @@ else
   nohup "$PY" "$DEST/hublane.py" --config "$CFG" >/tmp/hublane.log 2>&1 &
 fi
 
-echo "==> [6/6] 配置 shell 代理变量 -> $SHELLRC"
+echo "==> [6/7] 配置 shell 代理变量 -> $SHELLRC"
 touch "$SHELLRC"
 if ! grep -q "hublane" "$SHELLRC" 2>/dev/null; then
 cat >> "$SHELLRC" <<'RC'
@@ -245,6 +263,20 @@ RC
   echo "    已追加到 $SHELLRC"
 else
   echo "    已存在, 跳过"
+fi
+
+echo
+echo "==> [7/7] 配置 Git 的 GitHub SSH 入口"
+# hublane 只做匿名只读加速, 带凭证的 git push 应当走 SSH(见 CHANGELOG 0.1.1 的
+# Security 条目)。但受限网络常把 github.com 劫持到 127.0.0.1 或封掉 22 端口,
+# 于是 ssh 连到本机 sshd 被拒 —— 表现为 Permission denied, 却查不出密钥有什么
+# 问题。这里检测到异常就把 git@github.com 指向 GitHub 官方的 ssh.github.com:443。
+# 以真实用户身份写入(不加 sudo 前缀时 $HOME 就是用户自己的), 已有配置绝不覆盖。
+if [ -f "$SRC/tools/setup-git-ssh.sh" ]; then
+  bash "$SRC/tools/setup-git-ssh.sh" \
+      --home "$USER_HOME" --user "$USER_NAME" --mode "$GIT_SSH_MODE" 2>&1 | sed 's/^/    /'
+else
+  echo "    [警告] 未找到 tools/setup-git-ssh.sh, 跳过(不影响代理本身)"
 fi
 
 sleep 3

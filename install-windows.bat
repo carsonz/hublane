@@ -23,14 +23,14 @@ if not defined PYEXE (
   echo        请先安装:  winget install Python 3.12
   exit /b 1
 )
-echo [1/6] Python: %PYEXE%
+echo [1/7] Python: %PYEXE%
 REM 解析成绝对路径: 计划任务 / Run 项的运行环境不一定有 py 启动器,
 REM 只写 "py" 会让 run-loop.bat 静默失败并陷入 3 秒死循环。
 for /f "delims=" %%p in ('%PYEXE% -c "import sys;print(sys.executable)"') do set "PYEXE=%%p"
 "%PYEXE%" -V
 
 REM ---------- 2. 部署 ----------
-echo [2/6] 部署到 %DEST%
+echo [2/7] 部署到 %DEST%
 if not exist "%DEST%" mkdir "%DEST%"
 copy /Y "%SRC%hublane.py"  "%DEST%\" >nul
 
@@ -64,7 +64,7 @@ call :gen_certs "%DEST%"
 if errorlevel 1 exit /b 1
 
 REM ---------- 3. P2 配置校验 ----------
-echo [3/6] 配置校验
+echo [3/7] 配置校验
 "%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" --check
 if errorlevel 1 (
   echo   [错误] 配置校验未通过, 请修正 %DEST%\config.json
@@ -75,7 +75,7 @@ REM ---------- 4. 安装 CA ----------
 REM 这里刻意用标签跳转而不是 if ... ( ... ) else ( ... ):
 REM cmd.exe 解析括号块时, 同一行里既有中文又有 ASCII 括号会被 DBCS 解码
 REM 错位吞掉右括号, 报"此时不应有 右括号"之类的解析错, 而且恰好在报错分支里。
-echo [4/6] 安装本地 CA 到当前用户受信任根证书颁发机构
+echo [4/7] 安装本地 CA 到当前用户受信任根证书颁发机构
 certutil -addstore -user -f Root "%DEST%\ca.crt" >nul 2>&1
 if errorlevel 1 goto ca_machine
 echo   CA 已安装 - 当前用户
@@ -90,7 +90,7 @@ echo   [警告] CA 安装失败, 请以管理员身份重新运行本脚本
 :ca_done
 
 REM ---------- 5. P1 自愈式启动 (计划任务 + 崩溃重启循环) ----------
-echo [5/6] 创建自愈式启动 - 计划任务, 崩溃后 3 秒自动重启
+echo [5/7] 创建自愈式启动 - 计划任务, 崩溃后 3 秒自动重启
 > "%DEST%\run-loop.bat" (
   echo @echo off
   echo :loop
@@ -113,10 +113,35 @@ if errorlevel 1 start "" wscript.exe "%DEST%\launch.vbs"
 timeout /t 3 >nul
 
 REM ---------- 6. 系统代理 ----------
-echo [6/6] 设置系统代理 127.0.0.1:%PORT%
+echo [6/7] 设置系统代理 127.0.0.1:%PORT%
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable   /t REG_DWORD /d 1 /f >nul
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer   /t REG_SZ /d "127.0.0.1:%PORT%" /f >nul
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyOverride /t REG_SZ /d "localhost;127.*;*.local" /f >nul
+
+REM ---------- 7. Git 的 GitHub SSH 入口 ----------
+REM hublane 只做匿名只读加速, 带凭证的 git push 应当走 SSH。但受限网络常把 github.com
+REM 的 DNS 劫持到 127.0.0.1 或封掉 22 端口, 于是 ssh 连到本机 sshd 被拒 —— 表现为
+REM Permission denied 却查不出密钥有什么问题。检测到就把 git@github.com 切到 GitHub
+REM 官方的 ssh.github.com:443 入口。可用 --no-git-ssh 跳过, --git-ssh-always 强制写。
+REM 这里刻意用标签跳转而不是 if 块: cmd 解析括号块时, 同一行里既有中文又有 ASCII
+REM 括号会被 DBCS 解码错位吞掉右括号(见上面安装 CA 那段的处理)。
+echo [7/7] 配置 Git 的 GitHub SSH 入口
+set "GIT_SSH_MODE=auto"
+for %%A in (%*) do (
+  if /I "%%~A"=="--no-git-ssh" set "GIT_SSH_MODE=never"
+  if /I "%%~A"=="--git-ssh-always" set "GIT_SSH_MODE=always"
+)
+if "%GIT_SSH_MODE%"=="never" goto gitssh_skip
+if not exist "%SRC%tools\setup-git-ssh.ps1" goto gitssh_missing
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%tools\setup-git-ssh.ps1" -Mode %GIT_SSH_MODE%
+goto gitssh_done
+:gitssh_skip
+echo   已按 --no-git-ssh 跳过
+goto gitssh_done
+:gitssh_missing
+echo   [警告] 未找到 tools\setup-git-ssh.ps1, 跳过 - 不影响代理本身
+goto gitssh_done
+:gitssh_done
 
 echo.
 echo ============================================
