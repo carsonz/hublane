@@ -55,6 +55,34 @@ jobs:
           cp -r tools docs bench dist/ 2>/dev/null || true
           ls -l dist
 
+      - name: 打包 Windows / Ubuntu 绿色压缩包
+        # 用 Python 标准库打包, 不依赖 runner 上的 zip 命令; 把零散文件聚成两个
+        # "开箱即用"压缩包, 发布资产不再是一堆散文件(各自含 hublane.py + 配置 + 安装/卸载脚本)
+        run: |
+          python - <<'PY'
+          import os, zipfile, tarfile
+          VER = os.environ["VER"]
+          dist = "dist"
+
+          def present(names):
+              return [n for n in names if os.path.exists(os.path.join(dist, n))]
+
+          win = present(["hublane.py", "config.json", "install-windows.bat",
+                         "uninstall-windows.bat", "install-windows-service.bat",
+                         "uninstall-windows-service.bat"])
+          with zipfile.ZipFile(os.path.join(dist, f"hublane-windows-{VER}.zip"),
+                               "w", zipfile.ZIP_DEFLATED) as z:
+              for f in win:
+                  z.write(os.path.join(dist, f), arcname=f)
+
+          ubu = present(["hublane.py", "config.json", "install.sh", "uninstall.sh"])
+          with tarfile.open(os.path.join(dist, f"hublane-ubuntu-{VER}.tgz"),
+                            "w:gz") as t:
+              for f in ubu:
+                  t.add(os.path.join(dist, f), arcname=f)
+          print("green bundles -> windows:", win, "| ubuntu:", ubu)
+          PY
+
       - name: 生成校验值 (SHA256SUMS)
         # 只校验文件, 跳过目录(上一步 cp -r 会把 tools/docs/bench 拷进 dist/,
         # 若用 sha256sum ./* 会对目录报错并令整个 job 退出码 1, 导致 Release 建不出来)
@@ -81,16 +109,11 @@ jobs:
           name: hublane ${{ github.event.inputs.tag || github.ref_name }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
-          # 显式列出文件, 不要把 tools/docs/bench 等目录当附件(Release 不能挂目录)
+          # 发布资产 = 两个绿色压缩包 + Python 源码包(sdist/wheel) + 校验文件
+          # Ubuntu 包用 .tgz, 所以 hublane-*.tar.gz 只命中 sdist, 不会重复
           files: |
+            dist/hublane-windows-*.zip
+            dist/hublane-ubuntu-*.tgz
             dist/hublane-*.tar.gz
             dist/*.whl
-            dist/hublane.py
-            dist/config.json
-            dist/install.sh
-            dist/uninstall.sh
-            dist/install-windows.bat
-            dist/uninstall-windows.bat
-            dist/install-windows-service.bat
-            dist/uninstall-windows-service.bat
             dist/SHA256SUMS
