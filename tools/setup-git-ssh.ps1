@@ -1,4 +1,4 @@
-# 为 Git 配置 GitHub 的 SSH 443 入口, 绕开 DNS 劫持与 22 端口封锁。
+﻿# 为 Git 配置 GitHub 的 SSH 443 入口, 绕开 DNS 劫持与 22 端口封锁。
 #
 # 背景(实测): 某些环境(例如 Windows 侧的代理/加速工具)会把 github.com 的 DNS
 # 指向 127.0.0.1, 于是 `ssh git@github.com` 连到的是**本机 sshd**, 必然被拒,
