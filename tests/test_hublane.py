@@ -1440,6 +1440,72 @@ class TestMisc(unittest.TestCase):
         self.assertIn(H._u_key("raw", "ghproxy_com"), H._ustat)
 
 
+class TestWindowsInstallParity(unittest.TestCase):
+    """Windows 安装脚本能力对齐(v0.2.0 第 1 条)与脚本自身的坑
+
+    这些只能静态断言兜底 —— cmd / PowerShell 的解析错误不会在 Linux CI 上暴露,
+    而是等用户实机安装时才炸(历史已炸过三次)。
+    """
+
+    SCRIPTS = ("install.sh", "install-windows.bat", "install-windows-service.bat",
+               "uninstall-windows.bat", "uninstall-windows-service.bat",
+               "tools/setup-firefox-policy.ps1")
+
+    @classmethod
+    def setUpClass(cls):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cls.root = root
+        cls.texts = {}
+        for name in cls.SCRIPTS:
+            with open(os.path.join(root, name), "rb") as fh:
+                cls.texts[name] = fh.read().decode("utf-8")
+
+    def test_renew_passthrough_on_windows(self):
+        """--renew-certs / --renew-ca 透传不能只做 Linux 侧"""
+        for name in ("install-windows.bat", "install-windows-service.bat"):
+            text = self.texts[name]
+            self.assertIn("--renew-certs", text, "%s 缺少 --renew-certs 透传" % name)
+            self.assertIn("--renew-ca", text, "%s 缺少 --renew-ca 透传" % name)
+            self.assertIn("--config", text)
+
+    def test_firefox_policy_implemented(self):
+        """此前只 echo 一句"请手动导入", 承诺的 policies.json 从未实现"""
+        ff = self.texts["tools/setup-firefox-policy.ps1"]
+        self.assertIn("Certificates", ff)
+        self.assertIn("ImportEnterpriseRoots", ff)
+        self.assertIn("policies.json", ff)
+        for name in ("install-windows.bat", "install-windows-service.bat"):
+            self.assertIn("setup-firefox-policy.ps1", self.texts[name],
+                          "%s 没有接 Firefox policies.json" % name)
+
+    def test_windows_scripts_are_crlf(self):
+        """.bat 存成 LF 时 cmd 解析括号块会出错; .gitattributes 管不到工作区文件"""
+        bats = [n for n in self.SCRIPTS if n.endswith(".bat")]
+        bats.append("tools/setup-firefox-policy.ps1")
+        for name in bats:
+            with open(os.path.join(self.root, name), "rb") as fh:
+                raw = fh.read()
+            self.assertIn(b"\r\n", raw, "%s 不是 CRLF" % name)
+            self.assertNotIn(b"\n", raw.replace(b"\r\n", b""),
+                             "%s 混入裸 LF" % name)
+
+    def test_powershell_scripts_have_utf8_bom(self):
+        """无 BOM 时 Windows PowerShell 5.1 按 ANSI 解码中文, 双字节序列可能
+        "造出"一个 `{` 或引号, 让整段脚本语法错误(setup-git-ssh.ps1 实测过)"""
+        for name in ("tools/setup-firefox-policy.ps1", "tools/setup-git-ssh.ps1",
+                     "tools/setup-windows-env.ps1", "tools/verify-windows.ps1"):
+            with open(os.path.join(self.root, name), "rb") as fh:
+                head = fh.read(3)
+            self.assertEqual(head, b"\xef\xbb\xbf", "%s 缺少 UTF-8 BOM" % name)
+
+    def test_wait_uses_ping_not_timeout(self):
+        """timeout 在 stdin 不是控制台时(脚本调脚本/输出重定向)直接报错退出"""
+        for name in ("install-windows.bat", "install-windows-service.bat",
+                     "uninstall-windows-service.bat"):
+            self.assertNotIn("timeout /t", self.texts[name],
+                             "%s 仍在用 timeout 等待" % name)
+
+
 class TestV020Features(unittest.TestCase):
     """v0.2.0 新增项的单元覆盖
 
@@ -1577,6 +1643,20 @@ class TestV020Features(unittest.TestCase):
         finally:
             H.set_paused(False)
 
+    # ---- Windows 实测发现的面板渲染问题 ----
+    def test_panel_autorefresh_keeps_url_tool_input(self):
+        """meta refresh 每 5s 整页重载, 会把 URL 工具里贴的 URL 与生成结果
+        一起清掉(Chrome/Edge 实测); 改为 JS 定时刷新并在输入框有内容时跳过"""
+        page = H.panel_html()
+        self.assertNotIn('http-equiv="refresh"', page)
+        self.assertIn("setInterval", page)
+        self.assertIn("hlUrl", page)
+
+    def test_panel_sort_keeps_header_row(self):
+        """表格没有 <thead>, 表头行就在 tbody 里 —— 不筛掉的话第一次排序
+        表头会被当成数据行挪走(Chrome/Edge 实测)"""
+        self.assertIn("!r.querySelector('th')", H.panel_html())
+
     # ---- 第 9 条: URL -> 等价命令 ----
     def test_cmd_for_url_git(self):
         got = H.cmd_for_url("https://github.com/o/r.git")
@@ -1622,16 +1702,20 @@ class TestV020Features(unittest.TestCase):
         class FakeResp(object):
             def __init__(self, data):
                 self._d = json.dumps(data).encode("utf-8")
+
             def read(self):
                 return self._d
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 return False
 
         class FakeOpener(object):
             def __init__(self, data):
                 self.d = data
+
             def open(self, url, timeout=None):
                 return FakeResp(self.d)
 

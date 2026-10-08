@@ -239,8 +239,7 @@
     导致证书每次重生成；`openssl req -addext` 在冻结产物里 SIGSEGV。
     打包脚本 `tools/build_exe.sh --smoke` 已能在 Linux 上跑通"打包 → 生成证书 →
     校验证书链"全流程。
-  - 剩余前置：需在干净 Windows 上手工跑通 —— 体积/杀软误报、证书生成对
-    `openssl.exe` 的依赖（用户没装 Git 时的兜底）、`--service` 打包后是否可用。
+  - 剩余前置：已在 Windows 11 实机跑通（见下方"需 Windows 平台验证"第 1 条）。
   - 若跑通：CI 增加 Windows exe 产物，**P4 Rust/Go 移植正式关闭**（见"明确不做"）。
 
 - [ ] **3. 分发渠道与可信标识**
@@ -323,32 +322,50 @@
 ## 需 Windows 平台验证（单独挑出）
 
 以下几项**逻辑已在 Linux 侧实现并有单测覆盖，但必须在真实 Windows 上跑过才算完成** ——
-Linux 无法替代验证，因此不随本次一起勾掉。验证条件：Windows 11 + 管理员会话。
+Linux 无法替代验证。验证条件：Windows 11 + 管理员会话。
+**2026-10-09 已在 Windows 11 实机（非管理员会话）完成大部分验证**，
+实测发现的问题见 `CHANGELOG.md` 0.2.0 的 Fixed 段（面板 JS 语法错误 / 表头被排序挪走 /
+ps1 缺 BOM / timeout 落空），全部修复。
 
-- [ ] **1. 第 2 条：Windows 免 Python 单文件 exe**
-  - 现状：`tools/build_exe.sh --smoke` 在 Linux 上已跑通"打包 → 生成证书 → 校验证书链"。
-  - 待验：体积 / 杀软误报；`--service` 在打包产物里是否可用；证书生成对 `openssl.exe`
-    的依赖（用户没装 Git for Windows 时如何兜底）。
-  - 跑通后：CI 增加 Windows exe 产物，并据此推进 winget manifest（第 3 条）。
-
-- [ ] **2. Windows 安装脚本缺的两项能力（本次只在 Linux 侧做了）**
-  - `install.sh` 已实现 `--renew-certs` / `--renew-ca` 透传与 Firefox `policies.json`；
-    **`install-windows.bat` / `install-windows-service.bat` 的同款能力尚未实现**。
-  - 待验：`.bat` 在 cmd 下有"中文 + ASCII 括号破坏块解析"的历史坑（见排障文档），
-    必须实机验证；Firefox 策略要写到
-    `%ProgramFiles%\Mozilla Firefox\distribution\policies.json`，且无 Firefox 时应正确跳过。
-
-- [ ] **3. 面板三项 + 暂停/恢复的浏览器实测**
-  - 列头排序、URL → 命令工具、立即刷新、暂停/恢复四个交互：逻辑已由单测覆盖，
-    但**渲染与点击**要在 Windows 的 Chrome / Edge 上看一眼（JS 未做自动化测试）。
-
-- [ ] **4. `--update` 在 Windows 服务模式下的回滚**
-  - 单测覆盖了"写入后 `--check` 不过则回滚"；但 Windows 上 `hublane.py` 正被服务占用时
-    能否替换、替换后是否需要重启服务，需在服务模式下实测。
-
+- [x] **1. 第 2 条：Windows 免 Python 单文件 exe**（管理员项除外，见下）
+  - 实测（Python 3.14 + PyInstaller 6.22）：`tools/build-exe.py` 产出
+    `dist/hublane.exe` **9.4 MB**；Defender 自定义扫描无检出（SmartScreen 对未签名
+    新 exe 的拦截无法离线模拟，发布后仍需观察）；干净目录首次运行自动播种
+    config + 证书，`--check` 通过；`--renew-certs` 在冻结产物里正常（不再复现
+    Linux 上的 SIGSEGV）；`--service` 不经 SCM 启动时给出正确提示，证明
+    SCM 分发器在冻结形态可用。
+  - openssl 兜底：exe 内置构建期证书，首次运行**不需要** openssl；
+    无 Git / 无 OpenSSL 时 `find_openssl()` 返回 None、`gen_certs()` 明确报
+    "未找到 openssl"（已实测），不静默失败。
+  - [ ] 剩余：管理员会话跑 `tools/verify-windows.ps1` 把 exe 注册成服务做
+    `sc create/start/stop` 与崩溃自愈全流程。
+- [x] **2. Windows 安装脚本缺的两项能力**
+  - `install-windows.bat` / `install-windows-service.bat` 已补
+    `--renew-certs` / `--renew-ca` 透传（服务脚本在续期后重装信任）与
+    Firefox `policies.json`（新脚本 `tools/setup-firefox-policy.ps1`，写入
+    `%ProgramFiles%\Mozilla Firefox\distribution\policies.json`，合并已有策略、
+    无 Firefox 自动跳过、缺管理员权限时明确提示）。
+  - 实测：干跑装置（系统命令换成 exe 桩、`LOCALAPPDATA` 指向沙箱）跑通全部
+    7 步 + `[2.5/7]` 续期两档 + 完成横幅，cmd 下无"中文 + ASCII 括号"解析错；
+    本机未装 Firefox，验证了正确跳过分支；`--help` 在非管理员会话可用。
+    真实写 Program Files / certutil 的分支需管理员会话复核。
+- [x] **3. 面板三项 + 暂停/恢复的浏览器实测**
+  - Edge（Chromium）无头渲染 + CDP 驱动点击，8 项断言全过：无 JS 错误、
+    列头排序升/降序且表头不动、URL 工具生成 curl/git clone、暂停后
+    `/status.paused=true` 且出现"恢复"、恢复后 `false`、立即刷新可提交。
+    Chrome 未在本机安装（与 Edge 同引擎），如需严格验证可在装有 Chrome 的
+    机器上重复。实测暴露并修复了两个渲染层 bug（见 CHANGELOG）。
+- [x] **4. `--update` 在 Windows 服务模式下的替换**
+  - 实测：Python 启动后不持有 `hublane.py` 的句柄 —— 常驻进程运行中
+    覆盖 / 删除 / move-over 替换全部成功，`%LOCALAPPDATA%\hublane\hublane.py`
+    在真服务（SYSTEM，pid 存活）运行中也可写。结论：**替换可行，
+    但运行中的进程仍是旧代码，必须重启服务才生效**；`--update` 成功消息
+    已补充该提示。替换后 `--check` 失败的回滚路径仍由单测覆盖。
 - [ ] **5. Gitee 同步工作流的一次真实 tag 验证**
-  - `.github/workflows/gitee-sync.yml` 已写好，但从未真正跑过：
-    需打一个 tag，确认 Gitee 上出现同名 Release 且附件齐全。
+  - `.github/workflows/gitee-sync.yml` 已复核并加固（release id 取不到时
+    显式失败并提示排查镜像同步，避免"绿了但没附件"的假成功）；
+    仍需打一个真实 tag 走一遍：GitHub Release 附件 → Gitee 同名 Release。
+    注意打 tag 会先过 release.yml 的 flake8 + 测试门禁（现已恢复绿）。
 
 ---
 

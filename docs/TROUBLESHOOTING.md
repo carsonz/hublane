@@ -365,8 +365,9 @@ pwsh -File tools/setup-windows-env.ps1     # 装 Python + OpenSSL，并建 .venv
 
 ### 9g. `ERROR: Input redirection is not supported`
 
-`wscript.exe` 在 stdin 被重定向时启动会打印这句。出现在 CI / agent / SSH 会话里，
-双击或正常桌面登录时不会出现。无害，可忽略。
+`wscript.exe` 在 stdin 被重定向时启动会打印这句；脚本里的 `timeout /t` 在同样的
+条件下也会直接报错退出、等待落空（0.2.0 起安装脚本已改用 `ping -n` 兜底）。
+出现在 CI / agent / SSH 会话里，双击或正常桌面登录时不会出现。无害，可忽略。
 
 ### 9h. 停止服务后进程还要过一会儿才消失
 
@@ -396,6 +397,22 @@ net stop hublane          :: 停止(会走 _stop 事件优雅退出, 等 1~2 秒
   `install-windows.bat`（两者互斥，否则会起两个实例抢端口）。
 - 服务以 LocalSystem 运行，`hublane.log` 写在安装目录；若目录不可写会自动
   回退到 `%TEMP%\hublane.log`。
+- `--update` 替换 `hublane.py` 不受运行中的服务影响（Windows 上 Python 启动后
+  不持有脚本句柄，实测可覆盖/删除），但**运行中的进程仍是旧代码**，
+  更新后需 `sc stop hublane && sc start hublane` 重启才生效。
+
+### 9j. 写 .ps1 时的编码坑：无 BOM 的中文脚本在 PowerShell 5.1 下整段失效
+
+Windows PowerShell 5.1 对**无 BOM** 的脚本按 ANSI 代码页解码。UTF-8 的中文
+被按双字节错位读入后，可能凭空"造出"一个 `{` 或引号，报
+`Missing closing '}' in statement block` 之类、整段脚本拒绝执行
+（`tools/setup-git-ssh.ps1`、`tools/setup-firefox-policy.ps1` 都实测踩中过）。
+
+规避方式（写 .ps1 时）：
+
+- 存为 **带 BOM 的 UTF-8**（与 `.bat` 相反，`.bat` 不要 BOM，`.ps1` 要 BOM）；
+- `tests/test_hublane.py` 的 `TestWindowsInstallParity` 已对全部 ps1 断言 BOM
+  与 CRLF，改脚本时不用手工记。
 
 ---
 

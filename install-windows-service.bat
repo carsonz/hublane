@@ -11,13 +11,20 @@ REM    - 支持 sc stop / net stop 优雅退出
 REM  前置条件: 已运行过 install-windows.bat (部署 + 证书 + CA)
 REM ============================================================
 
+set "SRC=%~dp0"
 set "DEST=%LOCALAPPDATA%\hublane"
 set "SVC=hublane"
 set "PORT=8899"
 REM 让内嵌 Python 用 UTF-8 读写, 否则中文输出在 cmd 里是乱码
 set "PYTHONUTF8=1"
 
-REM ---------- 0. 管理员检查 ----------
+REM ---------- 0. 先看是不是只来问用法(不需要管理员) ----------
+for %%A in (%*) do (
+  if /I "%%~A"=="--help" goto :usage
+  if /I "%%~A"=="-h" goto :usage
+)
+
+REM ---------- 0b. 管理员检查 ----------
 net session >nul 2>&1
 if errorlevel 1 (
   echo [错误] 需要管理员权限: 请右键"以管理员身份运行"本脚本。
@@ -56,6 +63,28 @@ set "PYW=%PYEXE:python.exe=pythonw.exe%"
 if not exist "%PYW%" set "PYW=%PYEXE%"
 echo [2/6] Python: %PYW%
 
+REM ---------- 2b. v0.2.0 第 1 条: 透传 --renew-certs / --renew-ca ----------
+REM 与 install-windows.bat 同款: 复用 hublane.py 自带的续期实现。
+REM --renew-ca 换了 CA, 必须重装信任, 否则服务起来后客户端证书校验全挂。
+set "RENEW_FLAG="
+for %%A in (%*) do (
+  if /I "%%~A"=="--renew-certs" set "RENEW_FLAG=--renew-certs"
+  if /I "%%~A"=="--renew-ca" set "RENEW_FLAG=--renew-ca"
+)
+if not defined RENEW_FLAG goto renew_done
+echo [2.5/6] 按 %RENEW_FLAG% 续期证书
+"%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" %RENEW_FLAG%
+if errorlevel 1 goto renew_fail
+if not "%RENEW_FLAG%"=="--renew-ca" goto renew_done
+echo   CA 已更换, 重新安装信任
+certutil -addstore -user -f Root "%DEST%\ca.crt" >nul 2>&1
+if errorlevel 1 certutil -addstore -f Root "%DEST%\ca.crt" >nul 2>&1
+goto renew_done
+:renew_fail
+echo   [错误] 证书续期失败, 请查看上面的输出
+exit /b 1
+:renew_done
+
 REM ---------- 3. 移除登录自启(避免与服务重复) ----------
 echo [3/6] 移除计划任务 / Run 项, 改为服务自启
 schtasks /end    /tn %SVC% >nul 2>&1
@@ -71,7 +100,9 @@ REM 端口看起来一直"没释放"。
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run-loop*' -or $_.CommandLine -like '*hublane.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8899" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":28898" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
-timeout /t 2 >nul
+REM 等待一律用 ping 而不是 timeout: timeout 在 stdin 不是控制台时
+REM (脚本里调脚本/输出被重定向)直接报错退出, 等待落空(Windows 实测)。
+ping -n 3 127.0.0.1 >nul
 
 REM ---------- 4. 创建服务 ----------
 echo [4/6] 创建服务 %SVC%
@@ -79,9 +110,9 @@ sc query %SVC% >nul 2>&1
 if not errorlevel 1 (
   echo   已存在同名服务, 先停止并删除
   sc stop %SVC% >nul 2>&1
-  timeout /t 2 >nul
+  ping -n 3 127.0.0.1 >nul
   sc delete %SVC% >nul 2>&1
-  timeout /t 1 >nul
+  ping -n 2 127.0.0.1 >nul
 )
 sc create %SVC% binPath= "\"%PYW%\" \"%DEST%\hublane.py\" --service --config \"%DEST%\config.json\"" ^
    start= auto DisplayName= "hublane relay proxy" >nul
@@ -103,7 +134,7 @@ sc start %SVC% >nul
 if errorlevel 1 (
   echo   [警告] 启动失败, 请查看事件查看器或 %DEST%\hublane.log
 ) else (
-  timeout /t 3 >nul
+  ping -n 4 127.0.0.1 >nul
   sc query %SVC% | findstr /i "RUNNING" >nul
   if errorlevel 1 (
     echo   [警告] 服务未处于 RUNNING, 请检查 %DEST%\hublane.log
@@ -121,4 +152,21 @@ echo     面板  : http://127.0.0.1:28898/
 echo     日志  : %DEST%\hublane.log
 echo     卸载  : 以管理员身份运行 uninstall-windows-service.bat
 echo ============================================
+
+REM ---------- 3.2: Firefox 用自己的信任库, policies.json 自动导入 ----------
+REM 与 install-windows.bat 同款(v0.2.0 第 1 条); 只在本机装了 Firefox 时才动作。
+if not exist "%SRC%tools\setup-firefox-policy.ps1" goto ff_done
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%tools\setup-firefox-policy.ps1" -CaPath "%DEST%\ca.crt"
+:ff_done
 endlocal
+goto :eof
+
+:usage
+echo 用法: install-windows-service.bat [选项]   ^(需管理员^)
+echo.
+echo   --renew-certs    注册服务前续期叶证书, 保留 CA, 系统信任无需重装
+echo   --renew-ca       连同 CA 一起续期, 随后重新安装信任
+echo   --help           显示本帮助
+echo.
+echo 前置: 已运行过 install-windows.bat 完成部署与证书生成
+exit /b 0

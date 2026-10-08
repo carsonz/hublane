@@ -19,7 +19,7 @@ if errorlevel 1 (
 
 echo [1/4] 停止并删除服务
 sc stop %SVC% >nul 2>&1
-timeout /t 2 >nul
+ping -n 3 127.0.0.1 >nul
 sc delete %SVC% >nul 2>&1
 sc query %SVC% >nul 2>&1
 REM 用标签而不是单行 if/else: cmd 解析括号块时, 同一行既有中文又有

@@ -69,7 +69,9 @@ jobs:
 
           win = present(["hublane.py", "config.json", "install-windows.bat",
                          "uninstall-windows.bat", "install-windows-service.bat",
-                         "uninstall-windows-service.bat"])
+                         "uninstall-windows-service.bat",
+                         "tools/setup-git-ssh.ps1",
+                         "tools/setup-firefox-policy.ps1"])
           with zipfile.ZipFile(os.path.join(dist, f"hublane-windows-{VER}.zip"),
                                "w", zipfile.ZIP_DEFLATED) as z:
               for f in win:

@@ -2234,6 +2234,34 @@ def handle_socks5(sock):
             pass
 
 
+def _parse_connect_target(netloc):
+    """CONNECT 目标解析: host:port 与 [::1]:443 两种形态; 非法端口返回 None"""
+    if netloc.startswith("["):          # [::1]:443
+        host, _, rest = netloc[1:].partition("]")
+        port_s = rest.lstrip(":")
+    else:
+        host, _, port_s = netloc.partition(":")
+    try:
+        return host, int(port_s or 443)
+    except ValueError:
+        return None
+
+
+def _handle_connect(sock, netloc):
+    """CONNECT 分支: 受管域名走 MITM, 其余纯 TCP 隧道"""
+    target = _parse_connect_target(netloc)
+    if target is None:
+        sock.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+        return
+    host, port = target
+    intercept = should_intercept(host)
+    sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+    if intercept:
+        serve_mitm(sock, host)
+    else:
+        tunnel(sock, host, port)
+
+
 def handle_client(sock, _addr):
     try:
         # 1.1: 客户端侧空闲上限 —— 防止"只连不发"的慢连接长期占住线程
@@ -2265,23 +2293,7 @@ def handle_client(sock, _addr):
             return
         parts = line.split(" ")
         if parts and parts[0].upper() == "CONNECT":
-            netloc = parts[1]
-            if netloc.startswith("["):        # [::1]:443
-                host, _, rest = netloc[1:].partition("]")
-                port_s = rest.lstrip(":")
-            else:
-                host, _, port_s = netloc.partition(":")
-            try:
-                port = int(port_s or 443)
-            except ValueError:
-                sock.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
-                return
-            intercept = should_intercept(host)
-            sock.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            if intercept:
-                serve_mitm(sock, host)
-            else:
-                tunnel(sock, host, port)
+            _handle_connect(sock, parts[1])
             return
         if len(parts) >= 2 and parts[1].startswith("http://"):
             parsed = urllib.parse.urlsplit(parts[1])
@@ -2773,7 +2785,6 @@ def panel_html(query=""):
     return """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <title>%(app)s %(ver)s</title>
-<meta http-equiv="refresh" content="5">
 <style>
  body{background:#12151b;color:#dfe4ec;margin:24px;
       font:13px/1.6 -apple-system,"Segoe UI",Roboto,sans-serif}
@@ -2855,7 +2866,10 @@ document.querySelectorAll('table').forEach(function(tb){
     th.style.cursor='pointer'; th.title='点击排序(升序/降序)';
     th.addEventListener('click', function(){
       var body=tb.tBodies[0]; if(!body) return;
-      var rows=Array.prototype.slice.call(body.rows);
+      /* 表格没有 <thead>, 表头行本身就在 tbody 里 —— 不把它筛掉,
+         第一次排序后表头会被当成数据行挪走(Edge/Chrome 实测) */
+      var rows=Array.prototype.slice.call(body.rows).filter(
+        function(r){ return !r.querySelector('th'); });
       var asc=th.getAttribute('data-asc') !== '1';
       th.setAttribute('data-asc', asc ? '1' : '0');
       rows.sort(function(a,b){
@@ -2881,9 +2895,16 @@ function hlCmd(){
   fetch(q).then(function(r){return r.json();}).then(function(d){
     if(!d.ok){ out.textContent='错误: '+d.error; return; }
     out.textContent=d.commands.map(function(c){
-      return c.label+':\n  '+c.cmd;}).join('\n\n');
+      return c.label+':\\n  '+c.cmd;}).join('\\n\\n');
   }).catch(function(e){ out.textContent='请求失败: '+e; });
 }
+/* 5 秒自动刷新改用 JS 而不是 <meta http-equiv=refresh>:
+   URL 工具输入框里有内容时跳过本轮刷新, 否则用户贴进来的 URL 和生成结果
+   每 5 秒被清空一次(Chrome/Edge 实测)。 */
+setInterval(function(){
+  var u=document.getElementById('hlUrl');
+  if(!u || !u.value) location.reload();
+}, 5000);
 </script>
 </body></html>
 """ % {
@@ -2992,32 +3013,56 @@ class MetricsHandler(BaseHTTPRequestHandler):
             self._send(200, "text/html; charset=utf-8",
                        panel_html(urllib.parse.urlsplit(self.path).query))
 
+    def _redirect_back(self):
+        """浏览器表单(面板按钮)提交后回到面板, 而不是把用户晾在一段裸 JSON 上。
+
+        curl / 脚本发的请求 Accept 不带 text/html, 仍拿 JSON —— API 行为不变。
+        重定向要带上原 query 里的 token, 否则开着 metrics_token 时回面板就是 401。
+        """
+        qs = urllib.parse.urlsplit(self.path).query
+        self.send_response(303)
+        self.send_header("Location", "/" + ("?" + qs if qs else ""))
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_POST(self):
         """2.3: 只有 /reload(受 token 保护), 其余 405"""
         path = urllib.parse.urlsplit(self.path).path
         if not metrics_authorized(self.headers.get("X-Hublane-Token", ""), self.path):
             self._send(401, "text/plain; charset=utf-8", "401 unauthorized\n")
             return
+        # 面板按钮是 <form method="post">, 浏览器发的 Accept 含 text/html
+        from_browser = "text/html" in (self.headers.get("Accept") or "")
         if path.startswith("/refresh"):             # v0.2.0 第 10 条: 手动重跑验真+探测
             ok, msg = refresh_now()
-            self._send(200 if ok else 400, "application/json; charset=utf-8",
-                       json.dumps({"ok": ok, "message": msg}, ensure_ascii=False))
+            if from_browser:
+                self._redirect_back()
+            else:
+                self._send(200 if ok else 400, "application/json; charset=utf-8",
+                           json.dumps({"ok": ok, "message": msg}, ensure_ascii=False))
             return
         if path.startswith("/pause") or path.startswith("/resume"):
             # v0.2.0 第 10 条: 暂停/恢复 —— 服务不停, 只是不再接管流量
             ok, msg = set_paused(path.startswith("/pause"))
-            self._send(200 if ok else 400, "application/json; charset=utf-8",
-                       json.dumps({"ok": ok, "message": msg,
-                                   "paused": _paused.is_set()}, ensure_ascii=False))
+            if from_browser:
+                self._redirect_back()
+            else:
+                self._send(200 if ok else 400, "application/json; charset=utf-8",
+                           json.dumps({"ok": ok, "message": msg,
+                                       "paused": _paused.is_set()},
+                                      ensure_ascii=False))
             return
         if not path.startswith("/reload"):
             self._send(405, "text/plain; charset=utf-8", "405 method not allowed\n")
             return
         ok, msg, need_restart = reload_config()
-        self._send(200 if ok else 400, "application/json; charset=utf-8",
-                   json.dumps({"ok": ok, "message": msg,
-                               "restart_required": need_restart},
-                              ensure_ascii=False))
+        if from_browser:
+            self._redirect_back()
+        else:
+            self._send(200 if ok else 400, "application/json; charset=utf-8",
+                       json.dumps({"ok": ok, "message": msg,
+                                   "restart_required": need_restart},
+                                  ensure_ascii=False))
 
     def log_message(self, fmt, *args):
         try:
@@ -3546,34 +3591,23 @@ def do_update(timeout=20):
             except Exception:
                 pass
         return False, "更新失败, 已回滚到旧版: %s" % repr(exc)[:80]
-    return True, ("已更新到 %s(旧文件备份为 .bak; config.json 保留未动, "
-                  "新版默认配置见 config.json.new)" % tag)
+    msg = ("已更新到 %s(旧文件备份为 .bak; config.json 保留未动, "
+           "新版默认配置见 config.json.new)" % tag)
+    if IS_WIN:
+        # Windows 实测: Python 启动后不持有 hublane.py 的句柄, 替换总能成功;
+        # 但运行中的进程仍是旧代码, 不重启就"看似更新了却没生效"。
+        msg += ("。正在运行的实例仍是旧代码, 需重启才生效: "
+                "服务模式 `sc stop hublane` 后 `sc start hublane`; "
+                "计划任务模式结束 python 进程, run-loop 会在 3 秒后自动拉起")
+    return True, msg
 
 
-def main(argv=None):
-    global CONF
-    ensure_utf8_console()            # 必须早于 setup_logging(): 它要挂 StreamHandler
-    parser = argparse.ArgumentParser(prog=APP, description="hublane relay proxy")
-    parser.add_argument("--config", default=CONF)
-    parser.add_argument("--check", action="store_true", help="仅校验配置后退出")
-    parser.add_argument("--service", action="store_true",
-                        help="以 Windows 服务方式运行(由 SCM 启动, Windows 专用)")
-    parser.add_argument("--renew-certs", action="store_true",
-                        help="续期叶证书(保留 CA, 系统里已信任的 CA 无需重装)")
-    parser.add_argument("--renew-ca", action="store_true",
-                        help="连同 CA 一起续期(需重新安装信任)")
-    parser.add_argument("--check-update", action="store_true",
-                        help="只查询是否有新版本并提示(不下载)")
-    parser.add_argument("--update", action="store_true",
-                        help="拉取最新 release 并替换(先备份, 校验失败自动回滚)")
-    parser.add_argument("--version", action="version", version="%s %s" % (APP, VERSION))
-    args = parser.parse_args(argv)
-    if args.config == CONF:      # 未显式指定 --config 时才播种 exe 内置默认值
-        seed_bundled("config.json", "ca.crt", "ca.key", "server.crt", "server.key")
-    CONF = args.config
-    load_config()
-    setup_logging()
+def _run_cli_command(args, argv):
+    """main() 的一次性子命令分支(--service/--renew/--check-update/--update/--check)。
 
+    返回 None 表示没命中任何子命令, 由调用方继续走"启动代理"的流程;
+    抽出来是为了把 main() 的圈复杂度压回 flake8 门禁(≤15)以内。
+    """
     if args.service:
         if not IS_WIN:
             emit("--service 仅支持 Windows", err=True)
@@ -3618,6 +3652,36 @@ def main(argv=None):
         load_state()
         emit(ip_pool_summary())
         return 0
+    return None
+
+
+def main(argv=None):
+    global CONF
+    ensure_utf8_console()            # 必须早于 setup_logging(): 它要挂 StreamHandler
+    parser = argparse.ArgumentParser(prog=APP, description="hublane relay proxy")
+    parser.add_argument("--config", default=CONF)
+    parser.add_argument("--check", action="store_true", help="仅校验配置后退出")
+    parser.add_argument("--service", action="store_true",
+                        help="以 Windows 服务方式运行(由 SCM 启动, Windows 专用)")
+    parser.add_argument("--renew-certs", action="store_true",
+                        help="续期叶证书(保留 CA, 系统里已信任的 CA 无需重装)")
+    parser.add_argument("--renew-ca", action="store_true",
+                        help="连同 CA 一起续期(需重新安装信任)")
+    parser.add_argument("--check-update", action="store_true",
+                        help="只查询是否有新版本并提示(不下载)")
+    parser.add_argument("--update", action="store_true",
+                        help="拉取最新 release 并替换(先备份, 校验失败自动回滚)")
+    parser.add_argument("--version", action="version", version="%s %s" % (APP, VERSION))
+    args = parser.parse_args(argv)
+    if args.config == CONF:      # 未显式指定 --config 时才播种 exe 内置默认值
+        seed_bundled("config.json", "ca.crt", "ca.key", "server.crt", "server.key")
+    CONF = args.config
+    load_config()
+    setup_logging()
+
+    rc = _run_cli_command(args, argv)
+    if rc is not None:
+        return rc
     if not (os.path.exists(CERT) and os.path.exists(KEY)):
         emit("缺少证书: %s / %s" % (CERT, KEY), err=True)
         return 1

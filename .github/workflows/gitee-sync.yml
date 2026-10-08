@@ -81,11 +81,17 @@ jobs:
             -H "Authorization: token ${GITEE_TOKEN}" \
             -H "Content-Type: application/json" \
             -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":${JSON_BODY},\"prerelease\":false}" || true
-          # 取 release id（无论新建还是已存在）
+          # 取 release id（无论新建还是已存在）。拿不到 id 就直接失败:
+          # 常见原因是 Gitee 上还没有这个 tag(镜像同步有延迟 / 推镜像步被拒),
+          # 静默继续只会得到一个"绿了但没附件"的假成功。
           RID="$(curl -s "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases/tags/${TAG}" \
             -H "Authorization: token ${GITEE_TOKEN}" \
             | python3 -c 'import sys,json;print(json.load(sys.stdin).get("id",""))')"
           echo "Gitee release id: $RID"
+          if [ -z "$RID" ]; then
+            echo "::error::Gitee 上找不到 tag ${TAG} 的 release —— 检查 GITEE_REPO/GITEE_TOKEN, 以及镜像是否已同步该 tag"
+            exit 1
+          fi
           # 上传附件
           for f in assets/*; do
             echo "uploading $f"

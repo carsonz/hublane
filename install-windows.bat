@@ -14,6 +14,12 @@ echo   hublane for Windows - 替代 Watt Toolkit
 echo ============================================
 echo.
 
+REM 只来问用法就别动系统: 放在最前面, 不检测 Python、不写任何文件
+for %%A in (%*) do (
+  if /I "%%~A"=="--help" goto :usage
+  if /I "%%~A"=="-h" goto :usage
+)
+
 REM ---------- 1. 查找 Python ----------
 set "PYEXE="
 where py >nul 2>nul && set "PYEXE=py"
@@ -38,7 +44,15 @@ REM 配置: 已存在则保留, 发行包里的新版另存为 config.json.new
 REM 以前这里是 copy /Y "%SRC%config.json" "%DEST%\" —— 无条件覆盖,
 REM 于是每次升级都会静默丢掉用户的自定义(端口 / token / 上游选择)。
 set "RESET_CONFIG=0"
-for %%A in (%*) do if /I "%%~A"=="--reset-config" set "RESET_CONFIG=1"
+REM v0.2.0 第 1 条: 证书续期透传。此前路线图写了"透传 --renew"却从未实现,
+REM 续期只能手敲 hublane.py --renew-certs; 这里复用 hublane.py 自己的实现,
+REM 与手敲命令完全同一条代码路径(--renew-ca 时下面的 [4/7] 会顺带重装信任)。
+set "RENEW_FLAG="
+for %%A in (%*) do (
+  if /I "%%~A"=="--reset-config" set "RESET_CONFIG=1"
+  if /I "%%~A"=="--renew-certs" set "RENEW_FLAG=--renew-certs"
+  if /I "%%~A"=="--renew-ca" set "RENEW_FLAG=--renew-ca"
+)
 REM 注意: 这里必须是 外层的 if exist 配 else (首次安装时 config.json 不存在要复制),
 REM 不能写成  if exist ( if ...) else (copy)  —— 那样首次安装外层为假, 内层 else 永远不跑到。
 if exist "%DEST%\config.json" (
@@ -69,6 +83,20 @@ if exist "%DEST%\config.json" (
 REM ---------- 2b. 本地生成 CA + 叶子证书 (不向仓库提交任何私钥) ----------
 call :gen_certs "%DEST%"
 if errorlevel 1 exit /b 1
+
+REM ---------- 2c. v0.2.0 第 1 条: 透传 --renew-certs / --renew-ca ----------
+REM 放在部署之后、装信任之前: 续出来的 CA 正好由下面的 [4/7] 装进系统信任库,
+REM 用户不必再手敲一次命令。这里用标签跳转而不是 if 块 —— cmd 解析括号块时,
+REM 同一行里既有中文又有 ASCII 括号会被 DBCS 解码错位吞掉右括号(见 [4/7] 注释)。
+if not defined RENEW_FLAG goto renew_done
+echo [2.5/7] 按 %RENEW_FLAG% 续期证书
+"%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" %RENEW_FLAG%
+if errorlevel 1 goto renew_fail
+goto renew_done
+:renew_fail
+echo   [错误] 证书续期失败, 请查看上面的输出
+exit /b 1
+:renew_done
 
 REM ---------- 3. P2 配置校验 ----------
 echo [3/7] 配置校验
@@ -102,7 +130,9 @@ echo [5/7] 创建自愈式启动 - 计划任务, 崩溃后 3 秒自动重启
   echo @echo off
   echo :loop
   echo "%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" ^>^> "%DEST%\hublane.log" 2^>^&1
-  echo timeout /t 3 ^>nul
+  REM 用 ping 兜底等 3 秒: timeout 在 stdin 不是控制台时(脚本里调脚本/重定向输出)
+  REM 会直接报 "Input redirection is not supported" 退出, 等待就落空了(实测)。
+  echo ping -n 4 127.0.0.1 ^>nul
   echo goto loop
 )
 > "%DEST%\launch.vbs" (
@@ -117,7 +147,7 @@ if errorlevel 1 (
 )
 schtasks /run /tn hublane >nul 2>&1
 if errorlevel 1 start "" wscript.exe "%DEST%\launch.vbs"
-timeout /t 3 >nul
+ping -n 4 127.0.0.1 >nul
 
 REM ---------- 6. 系统代理 ----------
 echo [6/7] 设置系统代理 127.0.0.1:%PORT%
@@ -163,19 +193,35 @@ echo     卸载    : uninstall-windows.bat
 echo ============================================
 echo.
 
-REM ---------- 3.2: Firefox 用自己的信任库, 需单独导入 ----------
-set "FFDIR=%APPDATA%\Mozilla\Firefox"
-if exist "%FFDIR%\profiles.ini" (
-  echo   [提示] 检测到 Firefox: 它**不使用**系统证书库, 需要单独导入 CA
-  echo          设置 ^> 隐私与安全 ^> 查看证书 ^> 证书机构 ^> 导入
-  echo          文件: %DEST%\ca.crt  勾选"信任由此机构标识的网站"
-) else (
-  if exist "%ProgramFiles%\Mozilla Firefox\firefox.exe" (
-    echo   [提示] 已安装 Firefox: 需在 Firefox 内单独导入 %DEST%\ca.crt
-  )
+REM ---------- 3.2: Firefox 用自己的信任库, policies.json 自动导入 ----------
+REM 此前只 echo 一句"请手动导入" —— 路线图里承诺的 policies.json 从未实现
+REM (v0.2.0 第 1 条)。JSON 里反斜杠要转义成 \\、还要合并用户已有的策略, 在 cmd
+REM 里拼极易出错, 所以逻辑放进 tools\setup-firefox-policy.ps1;
+REM 找不到该脚本(比如只解压了绿色包里的几个文件)时退回原来的手动提示。
+if not exist "%SRC%tools\setup-firefox-policy.ps1" goto ff_nopolicy
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%tools\setup-firefox-policy.ps1" -CaPath "%DEST%\ca.crt"
+goto ff_done
+:ff_nopolicy
+echo   [提示] 未找到 tools\setup-firefox-policy.ps1, 跳过 Firefox 策略
+if exist "%ProgramFiles%\Mozilla Firefox\firefox.exe" (
+  echo          Firefox 不使用系统证书库, 请手动导入 %DEST%\ca.crt
 )
+:ff_done
 endlocal
 goto :eof
+
+:usage
+echo 用法: install-windows.bat [选项]
+echo.
+echo   --reset-config    用发行包里的默认配置覆盖已有的 config.json
+echo   --renew-certs     部署后续期叶证书, 保留 CA, 系统信任无需重装
+echo   --renew-ca        连同 CA 一起续期, 随后重新安装信任
+echo   --no-git-ssh      不改动 Git 对 GitHub 的 SSH 入口
+echo   --git-ssh-always  总是把 git@github.com 切到 ssh.github.com:443
+echo   --help            显示本帮助
+echo.
+echo 默认行为: 保留你现有的 config.json, 把发行包里的新版另存为 config.json.new
+exit /b 0
 
 REM ---------- 本地生成 CA + 叶子证书 (不向仓库提交任何私钥) ----------
 :gen_certs
