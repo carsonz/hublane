@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  actions: write         # 建完 Release 后要显式 dispatch Gitee 同步工作流
   id-token: write        # 来源证明(attestation)需要 OIDC
   attestations: write
 
@@ -121,3 +122,16 @@ jobs:
             dist/hublane-*.tar.gz
             dist/*.whl
             dist/SHA256SUMS
+
+      - name: 触发 Gitee 附件同步
+        # 用 GITHUB_TOKEN 建的 Release 不会再触发 release:published 事件
+        # (GitHub 的规则: GITHUB_TOKEN 触发的事件不产生新的 workflow run),
+        # 所以 gitee-sync.yml 的 release 触发器永远不会自己点火 —— 实测 v0.2.0
+        # 打完 tag 后它一次都没跑。这里显式 dispatch 一次;
+        # workflow_dispatch 是唯一能被 GITHUB_TOKEN 点着的事件。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          gh workflow run gitee-sync.yml --repo "$GITHUB_REPOSITORY" -f tag="$TAG"
+          echo "已请求同步 $TAG"
