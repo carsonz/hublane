@@ -39,24 +39,31 @@ REM 以前这里是 copy /Y "%SRC%config.json" "%DEST%\" —— 无条件覆盖,
 REM 于是每次升级都会静默丢掉用户的自定义(端口 / token / 上游选择)。
 set "RESET_CONFIG=0"
 for %%A in (%*) do if /I "%%~A"=="--reset-config" set "RESET_CONFIG=1"
-if exist "%DEST%\config.json" if "%RESET_CONFIG%"=="0" (
-  powershell -NoProfile -Command ^
-    "if ((Get-FileHash -Algorithm SHA256 '%SRC%config.json').Hash -eq (Get-FileHash -Algorithm SHA256 '%DEST%\config.json').Hash) { exit 0 } else { exit 1 }" >nul 2>&1
-  if errorlevel 1 (
-    copy /Y "%DEST%\config.json" "%DEST%\config.json.bak" >nul
-    copy /Y "%SRC%config.json"   "%DEST%\config.json.new" >nul
-    echo   已保留你现有的 config.json ^(旧值另存为 config.json.bak^)
-    echo   发行包里的新版默认配置已写到: %DEST%\config.json.new
-    echo   -^> 新增/变更的键请自行合并:  fc %DEST%\config.json %DEST%\config.json.new
-    echo   -^> 想直接用新版:  install-windows.bat --reset-config
+REM 注意: 这里必须是 外层的 if exist 配 else (首次安装时 config.json 不存在要复制),
+REM 不能写成  if exist ( if ...) else (copy)  —— 那样首次安装外层为假, 内层 else 永远不跑到。
+if exist "%DEST%\config.json" (
+  if "%RESET_CONFIG%"=="0" (
+    powershell -NoProfile -Command ^
+      "if ((Get-FileHash -Algorithm SHA256 '%SRC%config.json').Hash -eq (Get-FileHash -Algorithm SHA256 '%DEST%\config.json').Hash) { exit 0 } else { exit 1 }" >nul 2>&1
+    if errorlevel 1 (
+      copy /Y "%DEST%\config.json" "%DEST%\config.json.bak" >nul
+      copy /Y "%SRC%config.json"   "%DEST%\config.json.new" >nul
+      echo   已保留你现有的 config.json ^(旧值另存为 config.json.bak^)
+      echo   发行包里的新版默认配置已写到: %DEST%\config.json.new
+      echo   -^> 新增/变更的键请自行合并:  fc %DEST%\config.json %DEST%\config.json.new
+      echo   -^> 想直接用新版:  install-windows.bat --reset-config
+    ) else (
+      del /Q "%DEST%\config.json.new" >nul 2>&1
+      echo   config.json 与发行版一致, 保持不动
+    )
   ) else (
+    copy /Y "%SRC%config.json" "%DEST%\" >nul
     del /Q "%DEST%\config.json.new" >nul 2>&1
-    echo   config.json 与发行版一致, 保持不动
+    echo   已按 --reset-config 覆盖为发行版默认配置
   )
 ) else (
   copy /Y "%SRC%config.json" "%DEST%\" >nul
-  del /Q "%DEST%\config.json.new" >nul 2>&1
-  if "%RESET_CONFIG%"=="1" echo   已按 --reset-config 覆盖为发行版默认配置
+  echo   已写入发行版默认配置 config.json
 )
 
 REM ---------- 2b. 本地生成 CA + 叶子证书 (不向仓库提交任何私钥) ----------
