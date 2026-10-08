@@ -13,7 +13,8 @@ hublane - 让 WSL 与 Windows 稳定访问 GitHub 的本地中继代理
   健壮   上游连接池(探活 + 透明重试 + 容量 LRU) /
          客户端连接治理(client_timeout / max_conns) / 本地访问控制(proxy_token + uid 白名单) /
          证书生命周期(--renew-certs) / Windows 真服务(--service) 与计划任务自愈
-  可观测 HTML 面板(上游与 DoH 健康度、延迟 P50/P95/P99、最近请求) /
+  可观测 HTML 面板(上游与 DoH 健康度、延迟 P50/P95/P99、最近请求、
+         HTTP 与纯 TCP 隧道分开计数) /
          /status /requests /diag /healthz /pac + 指标鉴权(metrics_token) /
          JSON 日志 / 配置热重载(SIGHUP 与 POST /reload)
 
@@ -48,9 +49,40 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from logging.handlers import RotatingFileHandler
 
 APP = "hublane"
-VERSION = "0.1.0"
+VERSION = "0.1.1"              # 版本号唯一来源; pyproject.toml 构建期读取它
 IS_WIN = os.name == "nt"
-INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
+# PyInstaller onefile 模式下 __file__ 指向临时解包目录(_MEIPASS), 每次运行都会被清空。
+# 若继续用它当数据目录, 证书/配置/状态/日志会跟着临时目录一起消失, 所以冻结后
+# 不能用它。优先级: HUBLANE_HOME(可重定位/测试) > exe 所在目录 > 源码所在目录。
+FROZEN = bool(getattr(sys, "frozen", False))
+BUNDLE_DIR = getattr(sys, "_MEIPASS", "") or ""   # onefile 解包目录, 源码运行时为空
+if os.environ.get("HUBLANE_HOME"):
+    INSTALL_DIR = os.environ["HUBLANE_HOME"]
+elif FROZEN:
+    INSTALL_DIR = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    INSTALL_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def seed_bundled(*names):
+    """把 exe 内置的默认文件播种到 INSTALL_DIR(仅当目标不存在时)。
+
+    仅在 PyInstaller 打包后有意义: 让单文件 exe 首次运行时能自动落地
+    config.json 与预生成的证书, 而不用让用户手工准备。
+    """
+    if not BUNDLE_DIR or BUNDLE_DIR == INSTALL_DIR:
+        return
+    for name in names:
+        src = os.path.join(BUNDLE_DIR, name)
+        dst = os.path.join(INSTALL_DIR, name)
+        if os.path.exists(dst) or not os.path.isfile(src):
+            continue
+        try:
+            shutil.copy2(src, dst)
+        except OSError:
+            pass
+
+
 CERT = os.path.join(INSTALL_DIR, "server.crt")
 KEY = os.path.join(INSTALL_DIR, "server.key")
 CONF = os.path.join(INSTALL_DIR, "config.json")
@@ -64,7 +96,21 @@ CSR = os.path.join(INSTALL_DIR, "server.csr")
 CERT_DAYS = 3650                      # 与安装脚本保持一致
 CA_SUBJECT = "/O=hublane/OU=Local Relay/CN=hublane Local Relay CA"
 LEAF_SUBJECT = "/O=hublane/OU=Local Relay/CN=hublane Relay Leaf"
+# CA 扩展: openssl req -x509 的默认输出只有 basicConstraints, 没有 keyUsage。
+# OpenSSL <= 3.0 容忍, 但 3.5+ 会报 "CA cert does not include key usage extension"
+# 而拒绝校验(2026 年在 Python 3.13/OpenSSL 3.6 上实测复现), 导致 MITM 全部失败。
 # 与 install.sh / install-windows.bat 保持一致(测试会校验三处一致)。
+#
+# 注: 这里刻意不用 `-addext`: 它会让 openssl 载入配置/provider, 在 PyInstaller
+# 冻结产物里调用会导致 SIGSEGV(实测), 恰好堵死"免安装 exe"这条路。
+# 故用 CSR + x509 -signkey + -extfile, 两种形态都安全。
+CA_EXTENSIONS = ("basicConstraints=critical,CA:TRUE",
+                 "keyUsage=critical,digitalSignature,keyCertSign,cRLSign",
+                 "subjectKeyIdentifier=hash")
+# 叶证书扩展: keyUsage 同理必填, 否则部分客户端也会拒。
+LEAF_EXTENSIONS = ("basicConstraints=CA:FALSE",
+                   "keyUsage=critical,digitalSignature,keyEncipherment",
+                   "extendedKeyUsage=serverAuth")
 # 覆盖: GitHub 系 + 默认 extra_hosts + 所有分组主机 + 内置按域名链的域名,
 # 否则"启用分组后浏览器报证书名不匹配"。
 EXTRA_LEAF_SAN = ("DNS:opencode.ai,DNS:www.baidu.com,DNS:localhost")
@@ -108,7 +154,11 @@ DEFAULTS = {
     "proxy_uid_whitelist": [],        # 仅 Linux/WSL: 允许使用代理的 uid 列表
     "raw_upstreams": ["ghproxy_com", "jsdelivr_fastly", "ghproxy",
                       "jsdelivr", "jsdelivr_gcore", "jsdelivr_cf"],
-    "github_upstreams": ["direct", "watt"],
+    # github.com 的上游链。镜像排在最前: direct 会被链路在 128 KiB 处掐断
+    # (大仓库 pack 下不来), watt 很慢且部分请求返回 0 字节。镜像由境外取回后
+    # 原样返回, 不受这个限制。watt 仍保留作为镜像全挂时的兜底。
+    "github_upstreams": ["ghproxy_com_gh", "ghfast_gh", "ghproxy_net_gh",
+                         "direct", "watt"],
     "extra_hosts": [
         "hcaptcha.com", "assets.hcaptcha.com", "imgs.hcaptcha.com",
         "www.hcaptcha.com", "js.hcaptcha.com", "newassets.hcaptcha.com",
@@ -184,6 +234,9 @@ DEFAULTS = {
     "cert_expire_warn_days": 90,
     # 2.1 可观测性: 最近请求样本的条数(0 = 不记录样本, 直方图仍统计)
     "sample_size": 200,
+    # 面板里"最近请求"与"已校验真实 IP"两块的可视行数(固定高度+滚动)。
+    # 这两块条数多、信息价值低, 不限高会把页脚顶出屏幕。
+    "panel_scroll_rows": 16,
     "direct_timeout": 6,
     "direct_fail_max": 3,
     "direct_cooldown": 600,
@@ -235,7 +288,11 @@ _stop = threading.Event()
 _started_at = time.time()
 _counters = {"requests": 0, "ok": 0, "fail": 0, "truncated": 0,
              "pool_retry": 0, "pool_hit": 0, "pool_miss": 0,
-             "bytes": 0, "rejected": 0}
+             "bytes": 0, "rejected": 0,
+             # 纯 TCP 隧道(非托管域名 CONNECT / 明文 http:// / SSH)单独统计。
+             # 不并入 requests/ok/fail: 那三项的口径是"HTTP 请求 / 单次上游尝试",
+             # 隧道既不是 HTTP 请求也没有"上游", 混在一起会让面板口径失真。
+             "tunnel_conns": 0, "tunnel_fail": 0, "tunnel_bytes": 0}
 _counters_lock = threading.Lock()
 # 2.1 可观测性: 固定桶延迟直方图 + 最近请求样本(仅内存, 不落盘, 不出本机)
 LATENCY_BUCKETS = (0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0)   # 秒(桶上界)
@@ -258,6 +315,19 @@ def _count(key, delta=1):
 def counters_snapshot():
     with _counters_lock:
         return dict(_counters)
+
+
+def _fmt_bytes(value):
+    """字节计数换算成 KB/MB, 纯展示用"""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(value) < 1024 or unit == "TB":
+            return ("%d %s" if unit == "B" else "%.1f %s") % (value, unit)
+        value /= 1024.0
+    return "%.1f TB" % value
 
 
 # ------------------------------------------------------------ 2.1 延迟与样本
@@ -300,6 +370,7 @@ def latency_stats(limit=12):
     """{"global": {...}, "by_upstream": [...]} —— 供 /status 与面板使用"""
     with _latency_lock:
         snapshot = {k: list(v) for k, v in _latency.items()}
+
     def summarize(buckets):
         return {"count": sum(buckets),
                 "p50": percentile(buckets, 0.5),
@@ -459,7 +530,8 @@ def reload_config():
 def _known_upstreams(cfg=None):
     cfg = CONFIG if cfg is None else cfg
     known = {"direct", "watt", "chain"}
-    return known | set(MIRROR_PREFIX) | set(JSDELIVR_HOSTS) | set(SITE_MIRRORS) \
+    return known | set(MIRROR_PREFIX) | set(GH_MIRROR_PREFIX) \
+        | set(JSDELIVR_HOSTS) | set(SITE_MIRRORS) \
         | set((cfg.get("custom_mirrors") or {}).keys())
 
 
@@ -679,6 +751,7 @@ def _u_score(state, now):
 
 def order_upstreams(scope, names):
     now = time.time()
+
     def key(name):
         state = _ustat.get(_u_key(scope, name))
         if not state:
@@ -771,6 +844,7 @@ def doh_ordered():
     """
     eps = [e for e in doh_endpoints() if e["enabled"]]
     now = time.time()
+
     def rank(ep):
         with _doh_lock:
             s = _doh.get(ep["name"]) or {}
@@ -879,6 +953,7 @@ def _warm_async(host):
     if host in _warming:
         return
     _warming.add(host)
+
     def run():
         try:
             pick_ips(host, force=True)
@@ -902,6 +977,7 @@ def pick_ips(host, force=False):
     if not pairs:
         log.info("resolve %s: DoH 无结果", host)
         return cached[1] if cached else []
+
     def work(item):
         ip, fam = item
         return ip, fam, _verify_ip(host, ip, fam, CONFIG.get("verify_timeout", 4))
@@ -963,6 +1039,22 @@ MIRROR_PREFIX = {
     # 域名替换式
     "gitmirror": "https://raw.gitmirror.com",
     "kkgithub": "https://raw.kkgithub.com",
+}
+
+# github.com 专用镜像(给 git 的 smart-HTTP 用)。
+# 与 MIRROR_PREFIX 的区别: 后者全部写死指向 raw.githubusercontent.com,
+# 只能服务 raw 域名。而 git clone/fetch 打的是 github.com:443, 走 GH_HOSTS 分支,
+# 原先只有 direct / watt 两个上游 —— direct 会被链路在 128 KiB 处掐断
+# (实测: SSLEOFError, 传输中断于正好 131072 字节), 大仓库的 pack 就永远下不来。
+# 前缀式镜像把整条 URL 嵌进路径, 由镜像站在境外取回, 因此不受这个限制。
+# 2026-10-08 实测(受限网络):
+#   gh-proxy.com   12.8 MB @ 5.9 MB/s, git clone --depth 1 git/git(14 MiB) 7s
+#   ghfast.top     12.8 MB @ 1.9 MB/s
+#   两者均完整支持 POST /git-upload-pack(不只是 GET info/refs)
+GH_MIRROR_PREFIX = {
+    "ghproxy_com_gh": "https://gh-proxy.com/https://github.com",
+    "ghfast_gh": "https://ghfast.top/https://github.com",
+    "ghproxy_net_gh": "https://ghproxy.net/https://github.com",
 }
 
 # ---------------------------------------------------------------- 通用镜像库
@@ -1032,7 +1124,7 @@ def mirror_url(name, path):
         if strip and path.startswith(strip):
             path = path[len(strip):]
         return SITE_MIRRORS[name] + path
-    prefix = MIRROR_PREFIX.get(name)
+    prefix = MIRROR_PREFIX.get(name) or GH_MIRROR_PREFIX.get(name)
     if prefix:
         return prefix + path
     if name in JSDELIVR_HOSTS:
@@ -1383,18 +1475,74 @@ def should_intercept(host):
         or per_host_chain(base) is not None
 
 
-def build_chain(host, path):
+def _third_party_upstreams(cfg=None):
+    """第三方镜像型上游的名字集合(MIRROR_PREFIX / GH_MIRROR_PREFIX /
+    SITE_MIRRORS / custom_mirrors)。
+
+    它们的运营方都在这台机器之外, 因此只适合承载**匿名只读**流量。
+    """
+    cfg = CONFIG if cfg is None else cfg
+    return set(MIRROR_PREFIX) | set(GH_MIRROR_PREFIX) | set(SITE_MIRRORS) \
+        | set((cfg.get("custom_mirrors") or {}).keys())
+
+
+def is_sensitive(method, path, headers):
+    """是否为"敏感请求": 携带端到端凭证, 或是 git 写操作(push)。
+
+    敏感请求绝不能投递给第三方镜像, 有两条理由, 第二条更严重:
+
+    1. **功能上注定失败**: 公共镜像是匿名只读的, 它没有授权去代表客户端
+       写 GitHub, 所以 push 一律拿到 401(这就是"推不上去"的表象)。
+    2. **安全上是凭证泄漏**: ``Authorization`` 属于端到端头, 不在
+       ``_HOP_HEADERS`` 里, 会被 ``flat_headers()`` 原样保留并转发。
+       把它交给第三方镜像 = 把账号凭证明文交给镜像运营方。同理任何
+       带 token 的 api.github.com 请求也会泄漏。
+
+    因此一旦识别到凭证或 ``git-receive-pack``, 就把它就收敛到自有上游。
+    """
+    for key in (headers or ()):
+        if str(key).lower() == "authorization":
+            return True
+    return str(method or "").upper() == "POST" and "git-receive-pack" in (path or "")
+
+
+def restrict_upstreams(names, sensitive, log_host=None):
+    """敏感请求剔除第三方镜像, 只保留本机可控的上游(direct / watt / chain)。
+
+    全部被剔除时兜底为 direct —— 宁可直连失败, 也不能把凭证交给第三方。
+    """
+    names = list(names)
+    if not sensitive:
+        return names
+    third = _third_party_upstreams()
+    kept = [str(n) for n in names if str(n) not in third]
+    dropped = [str(n) for n in names if str(n) in third]
+    if dropped:
+        log.info("敏感请求%s: 跳过第三方镜像 %s, 改用 %s",
+                 " " + str(log_host) if log_host else "",
+                 ",".join(dropped), ",".join(kept) or "direct")
+    return kept or ["direct"]
+
+
+def build_chain(host, path, method=None, headers=None):
+    # method/headers 可选是为了兼容只按 (host, path) 取链的调用; 带上它们
+    # 才能识别出"带凭证 / git 写"这类不该走第三方镜像的请求。
+    sensitive = is_sensitive(method, path, headers)
     per_host = per_host_chain(host)        # P2: 按域名的上游链优先级最高
     if per_host:
-        return order_upstreams(host, per_host)
+        return order_upstreams(host, restrict_upstreams(per_host, sensitive, host))
     if host in RAW_HOSTS:
         names = list(CONFIG["raw_upstreams"])
         names += [n for n in CONFIG.get("custom_mirrors", {}) if n not in names]
-        return order_upstreams(host, names)
+        return order_upstreams(host, restrict_upstreams(names, sensitive, host))
     if host in GH_HOSTS:
-        return order_upstreams(host, CONFIG["github_upstreams"])
+        return order_upstreams(
+            host,
+            restrict_upstreams(CONFIG["github_upstreams"], sensitive, host))
     if host in extra_hosts():
-        return order_upstreams(host, CONFIG["extra_upstreams"])
+        return order_upstreams(
+            host,
+            restrict_upstreams(CONFIG["extra_upstreams"], sensitive, host))
     return []
 
 
@@ -1600,7 +1748,16 @@ def flat_headers(headers):
 
 # ------------------------------------------------------------ 连接处理
 def tunnel(sock, host, port):
+    """纯 TCP 转发(非托管域名的 CONNECT、明文 http://、SSH 等)。
+
+    与 relay_chain 分开计数: 这里没有 HTTP 语义, 也就没有"上游"和响应延迟,
+    因此只统计连接数/失败数/字节数, 且**不写入延迟直方图** ——
+    隧道可以存活数分钟, 混进 p50/p95 会把 HTTP 请求的延迟分位数彻底带偏。
+    """
     remote = None
+    started = time.time()
+    moved = 0
+    _count("tunnel_conns")
     try:
         # SSH(22) 等非 HTTP 端口: 若配置了节点代理的 SOCKS 端口则走它
         if port == 22 and CONFIG.get("chain_socks_port"):
@@ -1610,6 +1767,11 @@ def tunnel(sock, host, port):
             remote = socket.create_connection((host, port), timeout=20)
     except Exception as exc:
         log.info("tunnel fail %s:%s %s", host, port, exc)
+        _count("tunnel_fail")
+        sample_add(host=host, upstream="tunnel", method="TCP",
+                   path="%s:%d" % (host, port), result="fail",
+                   ms=round((time.time() - started) * 1000), bytes=0,
+                   detail=repr(exc)[:60])
         try:
             sock.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
         except Exception:
@@ -1633,9 +1795,14 @@ def tunnel(sock, host, port):
                     closed = True
                     break
                 other.sendall(data)
+                moved += len(data)
             if closed:
                 break
     finally:
+        _count("tunnel_bytes", moved)
+        sample_add(host=host, upstream="tunnel", method="TCP",
+                   path="%s:%d" % (host, port), result="ok",
+                   ms=round((time.time() - started) * 1000), bytes=moved)
         for one in (remote, sock):
             try:
                 one.shutdown(socket.SHUT_RDWR)
@@ -1749,7 +1916,7 @@ def serve_mitm(sock, host):
 
         _count("requests")
         ok, errors = relay_chain(tls, host, path, method, headers, body,
-                                 build_chain(host, path))
+                                 build_chain(host, path, method, headers))
         if not ok:
             send_502(tls, errors)
     except (ssl.SSLError, OSError, BrokenPipeError, ConnectionResetError) as exc:
@@ -1800,7 +1967,13 @@ def _read_head(sock):
 
 
 def _basic_password(value):
-    """解析 Proxy-Authorization: Basic base64(user:pass) -> password"""
+    """解析 Proxy-Authorization -> 用于比对的凭据
+
+    支持三种写法:
+      Basic base64(user:token)  —— 标准代理认证(curl -U user:token / URL 里写 :token)
+      Basic base64(token)       —— 省略用户名, 整个解码结果即 token
+      Bearer<token>             —— 直接给token
+    """
     if not value:
         return ""
     raw = value.strip()
@@ -1809,7 +1982,8 @@ def _basic_password(value):
             decoded = base64.b64decode(raw[6:].strip()).decode("utf-8", "replace")
         except Exception:
             return ""
-        return decoded.partition(":")[2]
+        user, sep, rest = decoded.partition(":")
+        return rest if sep else user
     if raw.lower().startswith("bearer "):
         return raw[7:].strip()
     return raw
@@ -2242,7 +2416,7 @@ def diag_text():
     out = ["hublane 诊断包", "=" * 60,
            "版本: %s" % VERSION,
            "平台: %s / Python %s" % ("windows" if IS_WIN else "linux",
-                                     sys.version.split()[0]),
+                                   sys.version.split()[0]),
            "监听: %s:%s" % (CONFIG.get("listen_host"), CONFIG.get("listen_port")),
            "运行: %s (启动于 %s)" % (
                _rel_time(time.time() - _started_at),
@@ -2271,6 +2445,7 @@ def metrics_authorized(given, path):
 
 def panel_html():
     counters = counters_snapshot()
+
     def cells(row):
         return "".join("<td>%s</td>" % html.escape(str(item)) for item in row)
     health = "\n".join(
@@ -2294,15 +2469,36 @@ def panel_html():
     ip_rows = "\n".join(
         "<tr>%s</tr>" % cells([host, ", ".join(addrs) or "-"])
         for host, addrs in ips) or '<tr><td colspan="2">暂无数据</td></tr>'
+    # 口径说明直接写进 title, 避免"失败数 > 请求数"被误读成 bug:
+    #   requests/ok/fail 是 HTTP 层面的口径, fail 数的是"单次上游尝试";
+    #   纯 TCP 隧道没有上游与响应延迟, 单独一组 tunnel_* 统计。
+    card_specs = (
+        ("requests", "HTTP 请求", "经 MITM 解密后处理的 HTTP 请求数(不含纯 TCP 隧道)"),
+        ("ok", "上游成功", "某个上游成功回源并返回完整响应"),
+        ("fail", "上游失败", "单次上游尝试失败数(一个请求可有多次失败)"),
+        ("truncated", "响应截断", "完整性校验发现响应被截断, 已降级上游或主动断开"),
+        ("pool_retry", "复用重试", "连接池里的复用连接失效, 换新连接透明重试"),
+        ("pool_hit", "池命中", "从连接池复用到可用连接"),
+        ("pool_miss", "池未命中", "连接池无空闲连接, 新建直连"),
+        ("rejected", "拒绝连接", "鉴权失败 / 并发超限 / SOCKS5 口令错"),
+        ("bytes", "回源字节", "经上游回源并转发给客户端的响应体字节"),
+        ("tunnel_conns", "隧道连接", "纯 TCP 隧道数: 非托管域名 CONNECT、明文 http://、SSH"),
+        ("tunnel_fail", "隧道失败", "隧道建连失败(目标不可达/超时)"),
+        ("tunnel_bytes", "隧道字节", "纯 TCP 隧道转发的字节数"),
+    )
+
+    def card_value(key):
+        raw = counters.get(key, 0)
+        return _fmt_bytes(raw) if key.endswith("bytes") else str(raw)
+
     cards = "".join(
-        '<div class="card"><div class="k">%s</div><div class="v">%s</div></div>'
-        % (html.escape(name), html.escape(str(counters.get(key, 0))))
-        for key, name in (("requests", "请求"), ("ok", "成功"), ("fail", "失败"),
-                          ("truncated", "截断"), ("pool_retry", "复用重试"),
-                          ("pool_hit", "池命中"), ("pool_miss", "池未命中"),
-                          ("rejected", "拒绝连接"), ("bytes", "字节")))
+        '<div class="card" title="%s"><div class="k">%s</div>'
+        '<div class="v">%s</div></div>'
+        % (html.escape(tip), html.escape(name), html.escape(card_value(key)))
+        for key, name, tip in card_specs)
     # 2.1: 延迟分位数(直方图桶上界) + 最近请求样本
     stats = latency_stats()
+
     def fmt_p(value):
         return "-" if value is None else "%.2fs" % value
     global_p = stats["global"]
@@ -2350,6 +2546,12 @@ def panel_html():
  .inline{display:inline;margin:0}
  .inline button,.inline{font:inherit;color:#5aa9ff;background:none;border:none;
    padding:0;cursor:pointer}
+ /* 最近请求 / 已校验真实 IP: 条数多且信息价值低, 固定高度 + 滚动,
+    避免把下面的页脚顶出屏幕。表头吸顶, 滚动时仍能对列。 */
+ .scroll{max-height:%(scroll_rows)dpx;overflow-y:auto;overflow-x:auto;
+   border:1px solid #232a36;border-radius:6px;margin-top:6px}
+ .scroll table{margin-top:0}
+ .scroll thead th{position:sticky;top:0;background:#12151b;z-index:1}
 </style></head><body>
 <h1>%(app)s <span class="dim">%(ver)s</span></h1>
 <p class="dim">平台 %(plat)s · 监听 <code>%(listen)s</code> · SOCKS5 %(socks)s ·
@@ -2371,11 +2573,11 @@ def panel_html():
 <th>样本</th></tr>
 %(latency)s</table>
 <h2>最近请求</h2>
-<table><tr><th>时间</th><th>域名</th><th>上游</th><th>方法</th><th>路径</th>
-<th>结果</th><th>耗时(ms)</th><th>字节</th></tr>
-%(samples)s</table>
+<div class="scroll"><table><tr><th>时间</th><th>域名</th><th>上游</th><th>方法</th>
+<th>路径</th><th>结果</th><th>耗时(ms)</th><th>字节</th></tr>
+%(samples)s</table></div>
 <h2>已校验真实 IP</h2>
-<table><tr><th>域名</th><th>IP</th></tr>%(ips)s</table>
+<div class="scroll"><table><tr><th>域名</th><th>IP</th></tr>%(ips)s</table></div>
 <footer>JSON: <a href="/status">/status</a> · 样本: <a href="/requests">/requests</a> ·
  诊断包: <a href="/diag">/diag</a> · PAC: <a href="/pac">/pac</a> ·
  存活: <a href="/healthz">/healthz</a> ·
@@ -2405,7 +2607,20 @@ def panel_html():
         "logfile": html.escape(LOG_FILE),
         "token": token_hint, "cards": cards, "health": health, "doh": doh,
         "ips": ip_rows,
+        # 这两块固定高度 + 滚动。行高约 29px(13px/1.6 + 上下 6px padding),
+        # 据此把行数换算成像素。下限 5 行、上限 40 行: 太小看不出是滚动区,
+        # 太大就失去了限高的意义。
+        "scroll_rows": _scroll_px(),
     }
+
+
+def _scroll_px():
+    """面板里"最近请求 / 已校验真实 IP"两块的可视高度(px)"""
+    try:
+        rows = int(CONFIG.get("panel_scroll_rows", 16) or 16)
+    except (TypeError, ValueError):
+        rows = 16
+    return max(5, min(40, rows)) * 29
 
 
 class MetricsHandler(BaseHTTPRequestHandler):
@@ -2462,17 +2677,62 @@ class MetricsHandler(BaseHTTPRequestHandler):
 
 
 # ------------------------------------------------------------ P1: Windows 真服务
+# SCM 常量提到模块级: 状态机本身不依赖 ctypes, 这样在 Linux CI 与本地都能直接单测。
+SVC_WIN32_OWN_PROCESS = 0x10
+SVC_ACCEPT_STOP = 0x01
+SVC_STOPPED = 0x01
+SVC_STOP_PENDING = 0x03
+SVC_RUNNING = 0x04
+CTRL_STOP, CTRL_SHUTDOWN, CTRL_INTERROGATE = 0x01, 0x05, 0x04
+ERROR_SERVICE_DISABLED = 1063      # 非 SCM 进程启动服务程序
+
+
+class ServiceCore(object):
+    """Windows 服务状态机: 只做状态上报与控制请求分发。
+
+    不 import ctypes, 通过 backend 抽象与 advapi32 通信, 因此可以在任意平台
+    用假 backend 驱动测试(见 tests/test_windows_service.py)。
+    """
+
+    def __init__(self, backend, service_name=SERVICE_NAME, stop_event=None):
+        self.backend = backend
+        self.service_name = service_name
+        self.stop_event = _stop if stop_event is None else stop_event
+        self.handle = None
+        self.last = None       # 最近一次上报的字段, 供断言/回读当前状态
+
+    def report(self, state, hint=0, checkpoint=0):
+        """上报服务状态。只有拿到控制句柄后才真正通知 SCM。"""
+        fields = {"service_type": SVC_WIN32_OWN_PROCESS,
+                  "state": state,
+                  # 仅 RUNNING 时才接受停止/关闭, 其余状态先拒绝,
+                  # 避免还没 RUNNING 就被 stop 打断导致 SCM 判定异常。
+                  "controls_accepted": SVC_ACCEPT_STOP if state == SVC_RUNNING else 0,
+                  "exit_code": 0,
+                  "specific_exit_code": 0,
+                  "checkpoint": checkpoint,
+                  "wait_hint": hint}
+        self.last = fields
+        if self.handle:
+            self.backend.set_status(self.handle, fields)
+
+    def on_control(self, control):
+        """SCM 控制请求回调。返回 0 表示已处理。"""
+        if control in (CTRL_STOP, CTRL_SHUTDOWN):
+            self.report(SVC_STOP_PENDING, hint=30000, checkpoint=1)
+            log.info("收到服务停止请求, 正在退出")
+            self.stop_event.set()
+        elif control == CTRL_INTERROGATE:
+            self.report(self.last["state"] if self.last else SVC_STOPPED)
+        return 0
+
+
 def _win_service(argv):
     """以 Windows 服务方式运行(由 SCM 启动), 支持 sc stop 优雅退出"""
     import ctypes
     from ctypes import wintypes
 
     advapi = ctypes.WinDLL("advapi32", use_last_error=True)
-    svc_win32_own_process = 0x10
-    accept_stop = 0x01
-    ctrl_stop, ctrl_shutdown = 0x01, 0x05
-    ctrl_interrogate = 0x04
-    st_running, st_stop_pending, st_stopped = 0x04, 0x03, 0x01
 
     class ServiceStatus(ctypes.Structure):
         _fields_ = [("dwServiceType", wintypes.DWORD),
@@ -2499,46 +2759,41 @@ def _win_service(argv):
     advapi.StartServiceCtrlDispatcherW.argtypes = [ctypes.POINTER(ServiceTableEntry)]
     advapi.StartServiceCtrlDispatcherW.restype = wintypes.BOOL
 
-    status = ServiceStatus()
-    state = {"handle": None}
+    class AdvapiBackend(object):
+        """把 ServiceCore 的字典字段翻译成 advapi32 调用"""
 
-    def report(current, hint=0, checkpoint=0):
-        status.dwServiceType = svc_win32_own_process
-        status.dwCurrentState = current
-        status.dwControlsAccepted = accept_stop if current == st_running else 0
-        status.dwWin32ExitCode = 0
-        status.dwServiceSpecificExitCode = 0
-        status.dwCheckPoint = checkpoint
-        status.dwWaitHint = hint
-        if state["handle"]:
-            advapi.SetServiceStatus(state["handle"], ctypes.byref(status))
+        def register(self, handler):
+            return advapi.RegisterServiceCtrlHandlerExW(
+                SERVICE_NAME, handler, None)
 
-    def on_control(control, _event, _data, _ctx):
-        if control in (ctrl_stop, ctrl_shutdown):
-            report(st_stop_pending, hint=30000, checkpoint=1)
-            log.info("收到服务停止请求, 正在退出")
-            _stop.set()
-        elif control == ctrl_interrogate:
-            report(status.dwCurrentState)
-        return 0
+        def set_status(self, handle, fields):
+            status = ServiceStatus()
+            status.dwServiceType = fields["service_type"]
+            status.dwCurrentState = fields["state"]
+            status.dwControlsAccepted = fields["controls_accepted"]
+            status.dwWin32ExitCode = fields["exit_code"]
+            status.dwServiceSpecificExitCode = fields["specific_exit_code"]
+            status.dwCheckPoint = fields["checkpoint"]
+            status.dwWaitHint = fields["wait_hint"]
+            advapi.SetServiceStatus(handle, ctypes.byref(status))
 
-    handler = handler_t(on_control)
+    core = ServiceCore(AdvapiBackend())
+    handler = handler_t(lambda c, _e, _d, _x: core.on_control(c))
 
     def on_start(_argc, _argv):
-        state["handle"] = advapi.RegisterServiceCtrlHandlerExW(
-            SERVICE_NAME, handler, None)
-        report(st_running)
+        core.handle = core.backend.register(handler)
+        core.report(SVC_RUNNING)
         try:
             main([a for a in argv if a != "--service"])
         finally:
-            report(st_stopped)
+            core.report(SVC_STOPPED)
 
     table = (ServiceTableEntry * 2)()
     table[0].lpServiceName = SERVICE_NAME
     table[0].lpServiceProc = main_t(on_start)
     if not advapi.StartServiceCtrlDispatcherW(table):
         err = ctypes.get_last_error()
-        if err == 1063:
+        if err == ERROR_SERVICE_DISABLED:
             emit("--service 只能由服务控制管理器启动 (sc start %s); "
                  "前台运行请去掉该参数" % SERVICE_NAME, err=True)
         else:
@@ -2548,11 +2803,16 @@ def _win_service(argv):
 
 
 def find_openssl():
-    """定位 openssl(Windows 常见来源是 Git for Windows)"""
+    """定位 openssl(Windows 常见来源是 Git for Windows 或独立安装的 OpenSSL)"""
     candidates = ["openssl",
                   r"C:\Program Files\Git\usr\bin\openssl.exe",
                   r"C:\Program Files (x86)\Git\usr\bin\openssl.exe",
-                  os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\usr\bin\openssl.exe")]
+                  os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\usr\bin\openssl.exe"),
+                  # 独立安装的 OpenSSL(winget: ShiningLight.OpenSSL.LTS.Light),
+                  # 见 tools/setup-windows-env.ps1
+                  r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe",
+                  r"C:\Program Files\OpenSSL-Win32\bin\openssl.exe",
+                  r"C:\Program Files (x86)\OpenSSL-Win32\bin\openssl.exe"]
     for candidate in candidates:
         found = shutil.which(candidate)
         if found:
@@ -2617,6 +2877,42 @@ def _warn_cert_expiry():
                         label, days, path, "/--renew-ca")
 
 
+def _openssl_ca(exe, workdir, days):
+    """自签 CA: CSR + x509 -signkey, 而不是 req -x509。
+
+    两个原因(都与"能不能打成免安装 exe"直接相关):
+      1) CA 必须显式带 keyUsage —— openssl req -x509 的默认输出只有
+         basicConstraints, OpenSSL <= 3.0 容忍, 3.5+ 会报
+         "CA cert does not include key usage extension" 直接拒绝校验;
+      2) req -x509 不接受 -extfile, 只能靠 -addext; 而 -addext 会让 openssl
+         载入配置/provider, 在 PyInstaller 冻结产物里调用会 SIGSEGV(实测)。
+    """
+    ca_ext = os.path.join(workdir, "ca.ext")
+    with open(ca_ext, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(CA_EXTENSIONS) + "\n")
+    ca_csr = os.path.join(workdir, "ca.csr")
+    subprocess.run([exe, "req", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", CA_KEY, "-out", ca_csr, "-subj", CA_SUBJECT],
+                   check=True, capture_output=True)
+    subprocess.run([exe, "x509", "-req", "-in", ca_csr, "-signkey", CA_KEY,
+                    "-extfile", ca_ext, "-days", str(days), "-out", CA_CRT],
+                   check=True, capture_output=True)
+
+
+def _openssl_leaf(exe, workdir, days):
+    """叶证书: CSR + 用 CA 签发; SAN 由域名库推导。"""
+    ext = os.path.join(workdir, "san.ext")
+    with open(ext, "w", encoding="utf-8") as fh:
+        fh.write("subjectAltName=%s\n%s\n"
+                 % (leaf_san(), "\n".join(LEAF_EXTENSIONS)))
+    subprocess.run([exe, "req", "-newkey", "rsa:2048", "-nodes",
+                    "-keyout", KEY, "-out", CSR, "-subj", LEAF_SUBJECT],
+                   check=True, capture_output=True)
+    subprocess.run([exe, "x509", "-req", "-in", CSR, "-CA", CA_CRT, "-CAkey", CA_KEY,
+                    "-CAcreateserial", "-out", CERT, "-days", str(days),
+                    "-extfile", ext], check=True, capture_output=True)
+
+
 def gen_certs(renew_ca=True, days=CERT_DAYS):
     """1.4: 用 openssl 生成/续期证书; 返回 (是否成功, 说明)
 
@@ -2626,25 +2922,13 @@ def gen_certs(renew_ca=True, days=CERT_DAYS):
     if not exe:
         return False, "未找到 openssl, 无法生成证书"
     try:
-        if renew_ca or not (os.path.exists(CA_CRT) and os.path.exists(CA_KEY)):
-            subprocess.run([exe, "req", "-x509", "-newkey", "rsa:2048", "-nodes",
-                            "-keyout", CA_KEY, "-out", CA_CRT, "-days", str(days),
-                            "-subj", CA_SUBJECT], check=True, capture_output=True)
-        tmpdir = tempfile.mkdtemp(prefix="hublane-cert-")
+        workdir = tempfile.mkdtemp(prefix="hublane-cert-")
         try:
-            ext = os.path.join(tmpdir, "san.ext")
-            with open(ext, "w", encoding="utf-8") as fh:
-                fh.write("subjectAltName=%s\nbasicConstraints=CA:FALSE\n"
-                         "extendedKeyUsage=serverAuth\n" % leaf_san())
-            subprocess.run([exe, "req", "-newkey", "rsa:2048", "-nodes",
-                            "-keyout", KEY, "-out", CSR, "-subj", LEAF_SUBJECT],
-                           check=True, capture_output=True)
-            subprocess.run([exe, "x509", "-req", "-in", CSR, "-CA", CA_CRT,
-                            "-CAkey", CA_KEY, "-CAcreateserial", "-out", CERT,
-                            "-days", str(days), "-extfile", ext],
-                           check=True, capture_output=True)
+            if renew_ca or not (os.path.exists(CA_CRT) and os.path.exists(CA_KEY)):
+                _openssl_ca(exe, workdir, days)
+            _openssl_leaf(exe, workdir, days)
         finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            shutil.rmtree(workdir, ignore_errors=True)
         for path in (CSR, os.path.join(INSTALL_DIR, "ca.srl")):
             try:
                 os.remove(path)
@@ -2661,7 +2945,18 @@ def gen_certs(renew_ca=True, days=CERT_DAYS):
             made.append(os.path.basename(CA_CRT))
         return True, "已生成 %s (有效期 %d 天)" % (", ".join(made), days)
     except Exception as exc:
-        return False, "证书生成失败: %s" % (repr(exc)[:120])
+        return False, "证书生成失败: %s" % _openssl_error(exc)
+
+
+def _openssl_error(exc):
+    """把 openssl 的真实原因(只在 stderr 里)带出来, 否则用户只看到"失败" """
+    stderr = getattr(exc, "stderr", None)
+    if stderr:
+        detail = stderr.decode("utf-8", "replace").strip()[:200]
+        return "%s | openssl: %s" % (repr(exc)[:120], detail)
+    if isinstance(exc, OSError):
+        return "%s | %s" % (repr(exc)[:120], exc.strerror or exc)
+    return repr(exc)[:120]
 
 
 def emit(message, err=False):
@@ -2703,6 +2998,7 @@ def _install_reload_handler():
     """2.3: POSIX 下 SIGHUP 触发热重载(Windows 没有信号, 用 /reload 或面板按钮)"""
     if IS_WIN or not hasattr(signal, "SIGHUP"):
         return False
+
     def handler(_signum, _frame):
         def run():
             ok, msg, _restart = reload_config()
@@ -2740,9 +3036,81 @@ def _accept_loop(server):
                          daemon=True).start()
 
 
+_metrics_server = None
+
+
+def _start_metrics():
+    """启动指标/PAC 面板(独立守护线程); 失败只告警, 不影响代理主链路"""
+    global _metrics_server
+    if not CONFIG.get("metrics_enabled", True):
+        return
+    # metrics_host 为空时回落到 listen_host, 默认只监听回环
+    metrics_host = str(CONFIG.get("metrics_host") or "").strip() or \
+        CONFIG.get("listen_host", "127.0.0.1")
+    try:
+        metrics = ThreadingHTTPServer((metrics_host,
+                                       int(CONFIG.get("metrics_port", 28898))),
+                                      MetricsHandler)
+        _metrics_server = metrics
+        threading.Thread(target=metrics.serve_forever, daemon=True).start()
+        log.info("指标面板 http://%s:%s/ (/status /pac /healthz)",
+                 metrics_host, CONFIG.get("metrics_port"))
+        if CONFIG.get("metrics_token"):
+            log.info("metrics_token 已启用: 面板/JSON/PAC 需要带 token")
+    except Exception as exc:
+        log.warning("指标端点未启动: %s", exc)
+
+
+def _stop_metrics():
+    """停止指标面板并关闭监听套接字。
+
+    不能只依赖进程退出时的隐式回收: 服务模式里 main() 返回后到解释器真正退出
+    之间还有一段窗口, 期间 28898 仍被占用, 会让 sc stop / 重新安装看起来
+    "端口没释放"。显式关闭后这段窗口基本消失。
+    """
+    global _metrics_server
+    server = _metrics_server
+    _metrics_server = None
+    if server is None:
+        return
+    try:
+        server.shutdown()
+    except Exception:
+        pass
+    try:
+        server.server_close()
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------ main
+def ensure_utf8_console():
+    """把 stdout/stderr 切成 UTF-8。
+
+    Windows 英文 locale 下 Python 的控制台流是 cp1252/mbcs, 而本项目的日志与
+    提示全是中文 —— 一 print 就 UnicodeEncodeError 整个进程崩掉(实测: GitHub
+    windows-latest runner 上 `python tools/check_version.py` 与
+    `python hublane.py --check` 都栽在这里)。
+    emit() 里本来就 catch 住 write 异常退回写日志, 但日志的 StreamHandler 写的是
+    同一条流, 于是兜底也一起崩 —— 所以必须从根上把流改掉。
+
+    用 errors="replace" 而不是 strict: 服务模式(pythonw 无控制台)、
+    输出被重定向到管道或 PowerShell 时都可能碰到编码怪癖, 宁可把个别字符
+    显示成问号, 也不要让守护进程因为一行日志而退出。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:      # pythonw / 被重定向成非 TextIOWrapper
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
 def main(argv=None):
     global CONF
+    ensure_utf8_console()            # 必须早于 setup_logging(): 它要挂 StreamHandler
     parser = argparse.ArgumentParser(prog=APP, description="hublane relay proxy")
     parser.add_argument("--config", default=CONF)
     parser.add_argument("--check", action="store_true", help="仅校验配置后退出")
@@ -2754,6 +3122,8 @@ def main(argv=None):
                         help="连同 CA 一起续期(需重新安装信任)")
     parser.add_argument("--version", action="version", version="%s %s" % (APP, VERSION))
     args = parser.parse_args(argv)
+    if args.config == CONF:      # 未显式指定 --config 时才播种 exe 内置默认值
+        seed_bundled("config.json", "ca.crt", "ca.key", "server.crt", "server.key")
     CONF = args.config
     load_config()
     setup_logging()
@@ -2793,20 +3163,7 @@ def main(argv=None):
     threading.Thread(target=_probe_all, daemon=True).start()
     threading.Thread(target=pick_ips, args=("github.com",), daemon=True).start()
 
-    if CONFIG.get("metrics_enabled", True):
-        metrics_host = str(CONFIG.get("metrics_host") or "").strip() or \
-            CONFIG.get("listen_host", "127.0.0.1")
-        try:
-            metrics = ThreadingHTTPServer((metrics_host,
-                                           int(CONFIG.get("metrics_port", 28898))),
-                                          MetricsHandler)
-            threading.Thread(target=metrics.serve_forever, daemon=True).start()
-            log.info("指标面板 http://%s:%s/ (/status /pac /healthz)",
-                     metrics_host, CONFIG.get("metrics_port"))
-            if CONFIG.get("metrics_token"):
-                log.info("metrics_token 已启用: 面板/JSON/PAC 需要带 token")
-        except Exception as exc:
-            log.warning("指标端点未启动: %s", exc)
+    _start_metrics()
 
     host = CONFIG.get("listen_host", "127.0.0.1")
     port = int(CONFIG.get("listen_port", 8899))
@@ -2822,6 +3179,7 @@ def main(argv=None):
         pass
     finally:
         _stop.set()
+        _stop_metrics()          # 与 _start_metrics 成对, 确保 28898 立即释放
         server.close()
         save_state()
     return 0

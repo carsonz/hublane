@@ -4,8 +4,9 @@
 
 > **hublane** —— 让 WSL 与 Windows 稳定访问 GitHub 的本地中继代理。
 > 纯 Python 标准库，零第三方依赖，一份代码同时跑在 WSL 和 Windows。
-> 版本 **0.1.0** —— 首个版本：中继内核（流式转发、HTTP 与 SOCKS5 共用端口）、
-> 自适应上游链、HTML 面板与 `/status` `/requests` `/diag`、健壮性基线与安装脚本一次性交付。
+> 版本 **0.1.1** —— 在 0.1.0 基础上修掉本机（WSL/Ubuntu + Python 3.13）实测暴露的
+> 打包、安装与转发问题，并给 github.com 补上镜像链（解决 `git clone/pull` 卡死）。
+> 版本号只在一处设置：`hublane.py` 的 `VERSION`，打包配置在构建期读取它。
 > Rust/Go 移植明确不做，见 [ROADMAP](./ROADMAP.md) · 架构见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) ·
 > 排障见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
 
@@ -125,7 +126,7 @@ sudo bash ~/hublane/install.sh --dry-run      # 只看将执行的步骤, 不做
 sudo bash ~/hublane/install.sh -y --skip-verify   # 非交互
 ```
 
-脚本会：部署到 `/opt/hublane` → 配置校验 → 安装 CA 到系统信任库（Debian 系 `update-ca-certificates`，RPM 系自动回退 `update-ca-trust`）→ 写入 systemd 服务（`Restart=always`）→ 注入代理变量到 shell 配置（自动识别 zsh/bash）→ 验证三条目标命令。
+脚本会：部署到 `/opt/hublane`（**已有的 `config.json` 不会被覆盖**，新版默认配置另存为 `config.json.new` 供你合并）→ 配置校验 → 安装 CA 到系统信任库（Debian 系 `update-ca-certificates`，RPM 系自动回退 `update-ca-trust`）→ 写入 systemd 服务（`Restart=always`）→ 注入代理变量到 shell 配置（按 passwd 里登记的登录 shell 判定：zsh 写 `~/.zshenv`，bash 写 `~/.bashrc`）→ 验证三条目标命令。
 
 卸载：`sudo bash uninstall.sh`（停服务 + 撤 CA + 清 shell 变量；加 `--purge` 连 `/opt/hublane` 一起删）。
 
@@ -179,7 +180,14 @@ curl -X POST http://127.0.0.1:28898/reload   # 热重载配置（POSIX 也可 ki
 sudo journalctl -u hublane -f        # 日志（WSL）
 python hublane.py --check            # 配置校验
 python hublane.py --renew-certs      # 续期叶证书(保留 CA); --renew-ca 连 CA 一起换
-python -m unittest discover -s tests # 单元 + 集成测试（148 项，集成测试不需要外网）
+python -m unittest discover -s tests # 单元 + 集成测试（165 项，集成测试不需要外网）
+
+# 仅 Windows：打包成免 Python 的独立 exe
+pwsh -File tools/setup-windows-env.ps1    # winget 装 Python + OpenSSL，并建 .venv
+python tools/build-exe.py                 # -> dist/hublane.exe（--one-dir 可降低杀软误报）
+
+# Windows 管理员级实测（计划任务模式 + 服务模式全流程，自动清理）
+pwsh -Command "Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File','tools\verify-windows.ps1' -Wait"
 ```
 
 面板/JSON/PAC/样本/诊断包/重载都受 `metrics_token` 保护（请求头 `X-Hublane-Token: <token>`
@@ -196,7 +204,7 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 | 键 | 说明 |
 |---|---|
 | `raw_upstreams` | raw 镜像链（仅为初始顺序，运行后按 EWMA × 成功率自动排序） |
-| `github_upstreams` | 默认 `["direct", "watt"]` |
+| `github_upstreams` | 默认 `["ghproxy_com_gh", "ghfast_gh", "ghproxy_net_gh", "direct", "watt"]`（镜像必须排在 `direct` 前，见下） |
 | `per_host_upstreams` | 按域名的上游链，支持通配：`{"github.com": ["watt","direct"], "*.example.com": ["chain"]}`；出现过的域名自动视为受管域名 |
 | `extra_hosts` / `extra_upstreams` | 额外受管站点及其上游链 |
 | `custom_mirrors` | 自定义镜像模板 `{"名字": "https://host/{path}"}` |
@@ -212,6 +220,7 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 | `cert_expire_warn_days` | 证书剩余天数低于该值时启动告警（默认 90 天），续期用 `--renew-certs` |
 | `proxy_token` / `proxy_uid_whitelist` | 本地访问控制：代理口令（HTTP `407` / SOCKS5 用户名密码）/ 允许的 uid 白名单（Linux 上按发起方进程的用户 ID 判定） |
 | `log_format` / `sample_size` | 日志格式 `text` 或 `json`（单行结构化）/ 最近请求样本条数（0 = 关闭） |
+| `panel_scroll_rows` | 面板里「最近请求」「已校验真实 IP」两块显示多少行（固定高度 + 滚动，可配 5–40，默认 16） |
 | `extra_host_groups` / `extra_host_groups_enabled` | 境外站点分组库与整组开关，见下 |
 | `integrity_check` / `integrity_buffer_max` | 响应完整性校验开关 / 整体校验的响应大小上限（默认 1 MiB） |
 | `success_window` / `success_min_samples` / `success_floor` | 成功率窗口长度 / 判定"已证明"所需样本 / 降级阈值 |
@@ -277,9 +286,20 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 - **代理本身默认不鉴权**：同机任意进程都能用它转发流量。多用户机器（或以服务模式
   跑在 LocalSystem（Windows 内置的系统账户）下）建议设置 `proxy_token`——HTTP 侧走 `Proxy-Authorization`，
   SOCKS5 侧走用户名/密码（密码即 token）；Linux 还可用 `proxy_uid_whitelist`
-  限制发起方 uid。证书会在到期前 90 天开始告警，用 `--renew-certs` 续期。
+  限制发起方 uid。`proxy_token` 的三种写法都支持：
+  `Basic base64(用户名:token)`（标准，`curl -U 任意名:token`）、`Basic base64(token)`
+  （省略用户名）、`Bearer token`。证书会在到期前 90 天开始告警，用 `--renew-certs` 续期。
 - raw 内容经第三方镜像取回，默认首选 `gh-proxy.com`（实时拉取原版）。
   更高可信度可改为 `["jsdelivr_fastly"]`（主流 CDN，但有缓存延迟与大文件限制）。
+- **携带凭证的请求绝不交给第三方镜像**。`Authorization` 是端到端头，转发给公共镜像
+  等于把令牌交给镜像运营方。因此 hublane 一旦识别到 `Authorization` 头或
+  `git-receive-pack`（即 `git push`），就把该请求收敛到自有上游（`direct` / `watt` /
+  `chain`）。由此产生的后果是：**`git push` 不走 hublane** —— 请改用 SSH
+  （`git remote set-url origin git@github.com:OWNER/REPO.git`），或单条命令绕过代理
+  （`git -c http.proxy= -c https.proxy= push`）。匿名的 `git clone` / `fetch` 不受影响，
+  仍然优先走镜像。
+- **若你曾通过 hublane 使用过 GitHub 个人访问令牌（PAT），请 revoke 并重新签发**。
+  旧版本会把令牌转发给第三方镜像运营方；已泄漏的凭证无法追回，轮换是唯一解。
 - 重要用途请自行校验 checksum。
 
 ## 已知限制
@@ -294,6 +314,30 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 - `raw` 之外的链（`github_upstreams` / `extra_upstreams`）没有后台主动探测，
   健康度只来自真实流量；raw 镜像则每 120 秒主动探测一轮。
 - 排障手册见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
+
+## 排障
+
+完整手册（编号案例）见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
+
+**Windows 实测确认的坑** —— 下面每一条都在 Windows 上真实复现过，不是推测：
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `curl: (60) schannel: the revocation status is unknown` | Windows schannel 会做 OCSP 吊销检查，而本地自签 CA 没有吊销响应者 | 加 `--ssl-no-revoke`，并用 `--cacert %LOCALAPPDATA%\hublane\ca.crt` |
+| `SSL: CA cert does not include key usage extension` | Python 3.14 / OpenSSL 3.5 拒绝缺少 `keyUsage` 扩展的 CA | `python hublane.py --renew-ca` 后重新安装信任 |
+| `.bat` 打印 `xxx was unexpected at this time.` | 在 `if (...)` 块里，`echo` 行同时含非 ASCII 文字和 ASCII 括号会破坏 cmd 的块解析 | `.bat` 保持 UTF-8，并避免在 `echo` 文本里写 `(...)` |
+| WSL 下 `./install.sh: bad interpreter: /usr/bin/env bash^M` | 脚本被以 CRLF 检出 | 仓库已带 `.gitattributes` 固定 `.sh` 为 LF、`.bat` 为 CRLF；旧检出请重新 clone |
+| 登录后代理几秒就没了，日志还是空的 | 生成的 `run-loop.bat` 调的是 `py`，而计划任务环境里没有它 | 已修复，重跑 `install-windows.bat` 即可，现在写入绝对解释器路径 |
+| `ERROR: Input redirection is not supported` | `wscript.exe` 在 stdin 被重定向时启动（CI / agent / SSH） | 无害，仅出现在非交互会话里 |
+| `sc stop` 后进程要过几秒才消失 | `concurrent.futures` 的 atexit 钩子要 join 线程池，等途中 DoH 请求返回 | 设计内：给 SCM 的等待提示就是 30 秒，实测约 10~15 秒 |
+| 从计划任务模式换服务模式后，端口被一个不明 `python.exe` 占着 | `run-loop.bat` 是 `goto loop` 死循环，旧实例的监管进程会把 python 重新拉起 | 已在 `[3/6]` 按命令行收掉整个进程树，重装一次即可 |
+| 找不到 `openssl` | Windows 不自带 OpenSSL，只有 Git for Windows 附带一份 | `pwsh -File tools/setup-windows-env.ps1` 会用 winget 装好 |
+
+**怎么看面板计数**：`HTTP 请求` 只统计被 hublane 解密（MITM）过的请求。纯 TCP 隧道
+（非托管域名、明文 `http://`、SSH）单独统计为 `隧道连接` / `隧道失败` / `隧道字节`，
+这样总流量可见，又不会污染 HTTP 口径。`上游失败` 数的是**单次上游尝试**：一个请求
+依次试三个上游就加三，所以它可能大于请求数，这不是 bug。隧道耗时**故意不计入延迟
+分位数** —— 隧道可能存活数分钟，混进去会把 P50/P95 带偏。鼠标悬停任意卡片可看精确口径。
 
 ## 法律与合规使用
 

@@ -13,6 +13,14 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# PYTHONUTF8=1: Windows runner 是英文 locale, Python 控制台流默认用 cp1252,
+# 而本项目的日志与提示全是中文 —— 没有它, 任何打印中文的步骤都会
+# UnicodeEncodeError 让整个任务失败(实测: 五个 windows-latest 任务全红)。
+# 代码里另有一层兜底(hublane.ensure_utf8_console / check_version 同款),
+# 这里再设一次是给将来新增的脚本兜底。
+env:
+  PYTHONUTF8: "1"
+
 jobs:
   test:
     name: ${{ matrix.os }} / py${{ matrix.python }}

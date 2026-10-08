@@ -10,17 +10,22 @@ PORT=8899
 ASSUME_YES=0
 DRY_RUN=0
 SKIP_VERIFY=0
+RESET_CONFIG=0
 for arg in "$@"; do
   case "$arg" in
     -y|--yes)     ASSUME_YES=1 ;;
     --dry-run)    DRY_RUN=1 ;;
     --skip-verify) SKIP_VERIFY=1 ;;
+    --reset-config) RESET_CONFIG=1 ;;
     -h|--help)
       cat <<'USAGE'
 用法: sudo bash install.sh [选项]
   -y, --yes        非交互(不再询问, 按默认继续)
       --dry-run    只打印将执行的步骤, 不做任何改动
       --skip-verify 跳过安装后的三条联网验证
+      --reset-config 用发行包里的默认配置**覆盖**已有的 config.json
+                  (默认行为是: 保留你的 config.json, 把新版另存为
+                   config.json.new, 由你自己合并 —— 升级不会丢配置)
   -h, --help       显示本帮助
 USAGE
       exit 0 ;;
@@ -29,7 +34,8 @@ USAGE
 done
 
 if [ "$DRY_RUN" = 1 ]; then
-  echo "(dry-run) 将执行: 部署到 $DEST -> 生成本地 CA/证书 -> 配置校验 -> "
+  echo "(dry-run) 将执行: 选定 Python -> 部署到 $DEST(已有 config.json 会保留,"
+  echo "(dry-run)         新版另存 config.json.new) -> 生成本地 CA/证书 -> 配置校验 -> "
   echo "(dry-run)         安装 CA 到系统信任库 -> 写入 systemd 服务 -> 注入 shell 代理变量 -> 验证"
   echo "(dry-run) 未做任何改动。"
   exit 0
@@ -57,13 +63,28 @@ if [ -r /proc/version ] && grep -qi microsoft /proc/version 2>/dev/null; then
 fi
 
 # ---- 判定要写入哪个 shell 配置 (zsh / bash / 其它) ----
-USER_SHELL="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f7)"
-case "${SHELL:-$USER_SHELL}" in
-  *zsh)  SHELLRC="$HOME/.zshrc" ;;
-  *bash) SHELLRC="$HOME/.bashrc" ;;
-  *)     SHELLRC="$HOME/.profile" ;;
+# 注意 sudo: $HOME 与 $(id -un) 都是 root, 直接用会把代理变量写进 /root/.zshrc,
+# 用户自己的 shell 永远拿不到(uninstall.sh 是按 SUDO_USER 清理的, 写了也清不掉)。
+# 这里与 uninstall.sh 保持一致, 认发起安装的那个用户。
+USER_NAME="${SUDO_USER:-$(id -un)}"
+USER_HOME="$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f6)"
+[ -n "$USER_HOME" ] || USER_HOME="$HOME"
+# 以 passwd 里登记的登录 shell 为准, $SHELL 只作兜底:
+# $SHELL 是继承来的进程状态, 不等于用户的登录 shell —— 例如从 IDE 任务、
+# CI 或 bash 脚本里 `sudo bash install.sh`, $SHELL 可能是 /bin/bash,
+# 于是代理变量被写进 .bashrc, 而用户实际天天用的 zsh 永远读不到。
+USER_SHELL="$(getent passwd "$USER_NAME" 2>/dev/null | cut -d: -f7)"
+case "${USER_SHELL:-$SHELL}" in
+  # zsh 用 .zshenv 而不是 .zshrc: .zshenv 被**所有** zsh 读取(含交互式),
+  # 一个文件就覆盖 `zsh -c` 这类非交互场景; 且它在 .zshrc **之前**执行,
+  # 用户想临时改代理(比如某个项目走别的节点)只要写在 .zshrc 里就能覆盖默认值。
+  # .zshrc 仅交互式读取, 非交互脚本拿不到代理, 会在 CI/脚本里莫名不走代理。
+  *zsh)  SHELLRC="$USER_HOME/.zshenv" ;;
+  # bash 没有等价物(只有交互式才读 .bashrc), 就按惯例写 .bashrc。
+  *bash) SHELLRC="$USER_HOME/.bashrc" ;;
+  *)     SHELLRC="$USER_HOME/.profile" ;;
 esac
-echo "Shell 检测: ${SHELL:-$USER_SHELL} -> 写入 $SHELLRC"
+echo "Shell 检测: 登录 shell=${USER_SHELL:-未登记}(继承 \$SHELL=${SHELL:-空}) -> 写入 $SHELLRC"
 
 # ---- 本地生成 CA + 叶子证书 (不向仓库提交任何私钥) ----
 gen_certs() {
@@ -77,15 +98,28 @@ gen_certs() {
     exit 1
   fi
   echo "    生成本地 CA 与叶子证书 (openssl)..."
-  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$d/ca.key" -out "$d/ca.crt" -days 3650 \
+  # CA 必须显式带 keyUsage: openssl req -x509 的默认输出没有它,
+  # OpenSSL <= 3.0 容忍, 但 3.5+ 会报 "CA cert does not include key usage extension"
+  # 直接拒绝校验 -> 之后所有 HTTPS 都被判不可信。
+  # 用 CSR + x509 -signkey 自签而不是 req -x509: req -x509 不接受 -extfile, 只能靠
+  # -addext; 而 -addext 在 PyInstaller 冻结产物里调 openssl 会 SIGSEGV(实测, 见
+  # tools/build_exe.sh)。与 hublane.py 保持一致(测试会校验三处一致)。
+  printf "basicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyCertSign,cRLSign\nsubjectKeyIdentifier=hash\n" > "$d/ca.ext"
+  openssl req -newkey rsa:2048 -nodes -keyout "$d/ca.key" -out "$d/ca.csr" \
     -subj "/O=hublane/OU=Local Relay/CN=hublane Local Relay CA" 2>/dev/null
+  openssl x509 -req -in "$d/ca.csr" -signkey "$d/ca.key" -extfile "$d/ca.ext" \
+    -days 3650 -out "$d/ca.crt" 2>/dev/null
   local san="DNS:ajax.googleapis.com,DNS:api.github.com,DNS:assets.hcaptcha.com,DNS:auth.docker.io,DNS:avatars.githubusercontent.com,DNS:bitbucket.org,DNS:camo.githubusercontent.com,DNS:cdn-lfs.huggingface.co,DNS:cdn.arkoselabs.com,DNS:cdn.jsdelivr.net,DNS:cdnjs.cloudflare.com,DNS:client-api.arkoselabs.com,DNS:cloud.githubusercontent.com,DNS:codeberg.org,DNS:codeload.github.com,DNS:conda.anaconda.org,DNS:crates.io,DNS:dl.dropboxusercontent.com,DNS:docs.rs,DNS:downloads.sourceforge.net,DNS:dropbox.com,DNS:epic-games-api.arkoselabs.com,DNS:esm.sh,DNS:files.pythonhosted.org,DNS:fly.dev,DNS:fonts.googleapis.com,DNS:fonts.gstatic.com,DNS:gcr.io,DNS:ghcr.io,DNS:gist.github.com,DNS:github.com,DNS:github.dev,DNS:github.githubassets.com,DNS:githubusercontent.com,DNS:gitlab.com,DNS:go.dev,DNS:golang.google.cn,DNS:golang.org,DNS:gravatar.com,DNS:hcaptcha.com,DNS:hf.co,DNS:huggingface.co,DNS:imgs.hcaptcha.com,DNS:imgs3.hcaptcha.com,DNS:index.crates.io,DNS:js.hcaptcha.com,DNS:k8s.gcr.io,DNS:mega.co.nz,DNS:mega.io,DNS:mega.nz,DNS:netlify.app,DNS:netlify.com,DNS:newassets.hcaptcha.com,DNS:nodejs.org,DNS:objects.githubusercontent.com,DNS:onedrive.live,DNS:onedrive.live.com,DNS:pages.dev,DNS:private-user-images.githubusercontent.com,DNS:prod-ireland.arkoselabs.com,DNS:production.cloudflare.docker.com,DNS:proxy.golang.org,DNS:pypi.org,DNS:quay.io,DNS:railway.app,DNS:raw.githubusercontent.com,DNS:registry-1.docker.io,DNS:registry.k8s.io,DNS:registry.npmjs.org,DNS:releases.hashicorp.com,DNS:repo.anaconda.com,DNS:secure.gravatar.com,DNS:sourceforge.net,DNS:static.crates.io,DNS:static.rust-lang.org,DNS:sum.golang.org,DNS:themes.googleusercontent.com,DNS:unpkg.com,DNS:user-images.githubusercontent.com,DNS:vercel.app,DNS:workers.dev,DNS:www.dropbox.com,DNS:www.github.com,DNS:www.gravatar.com,DNS:www.hcaptcha.com,DNS:www.mega.nz,DNS:www.npmjs.com,DNS:opencode.ai,DNS:www.baidu.com,DNS:localhost"
   openssl req -newkey rsa:2048 -nodes -keyout "$d/server.key" -out "$d/server.csr" \
     -subj "/O=hublane/OU=Local Relay/CN=hublane Relay Leaf" 2>/dev/null
   openssl x509 -req -in "$d/server.csr" -CA "$d/ca.crt" -CAkey "$d/ca.key" -CAcreateserial \
     -out "$d/server.crt" -days 3650 \
-    -extfile <(printf "subjectAltName=%s\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n" "$san") 2>/dev/null
-  rm -f "$d/server.csr" "$d/ca.srl"
+    -extfile <(printf "subjectAltName=%s\nbasicConstraints=CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n" "$san") 2>/dev/null
+  rm -f "$d/server.csr" "$d/ca.csr" "$d/ca.ext" "$d/ca.srl"
+  if ! openssl verify -CAfile "$d/ca.crt" "$d/server.crt" >/dev/null 2>&1; then
+    echo "    错误: 生成的证书自校验失败(CA 扩展或 SAN 有问题), 请删除 $d 后重试" >&2
+    exit 1
+  fi
   chmod 600 "$d/ca.key" "$d/server.key"
   chmod 644 "$d/ca.crt" "$d/server.crt"
 }
@@ -99,13 +133,9 @@ if [ -f "$DEST/hublane.py" ] && [ "$ASSUME_YES" != "1" ] && [ -t 0 ]; then
   esac
 fi
 
-echo "==> [1/6] 部署文件到 $DEST"
-mkdir -p "$DEST"
-gen_certs "$DEST"
-install -m 0755 "$SRC/hublane.py"   "$DEST/hublane.py"
-install -m 0644 "$SRC/config.json"  "$DEST/config.json"
-
-echo "==> [2/6] 选定 Python 解释器"
+echo "==> [1/6] 选定 Python 解释器"
+# 提前到部署之前选好: 下面要先用新代码校验"最终会生效的那份配置",
+# 校验不通过就必须在覆盖 hublane.py 之前中止, 否则会留下半安装状态。
 PY=""
 for cand in python3 /usr/bin/python3 python3.10 /usr/bin/python3.10 python; do
   if PY="$(command -v "$cand" 2>/dev/null)"; then break; fi
@@ -114,8 +144,50 @@ done
 if [ -z "$PY" ]; then echo "    错误: 未找到 python3"; exit 1; fi
 echo "    Python = $PY  ($("$PY" -V 2>&1))"
 
+echo
+echo "==> [2/6] 部署文件到 $DEST"
+mkdir -p "$DEST"
+gen_certs "$DEST"
+
+# ---- 配置: 已存在则保留, 发行包里的新版另存为 config.json.new ----
+# 以前这里是 install -m 0644 "$SRC/config.json" "$DEST/config.json", 无条件覆盖,
+# 于是每次升级都会静默丢掉用户的自定义(端口 / token / 上游选择 / 日志设置)。
+# 现在: 保留用户那份, 新版另存 .new 让用户自己合并。
+CFG="$DEST/config.json"
+NEWCFG="$DEST/config.json.new"
+if [ -f "$CFG" ] && [ "$RESET_CONFIG" = 0 ]; then
+  if cmp -s "$SRC/config.json" "$CFG"; then
+    echo "    config.json 与发行版一致, 保持不动"
+    rm -f "$NEWCFG"
+  else
+    cp -p "$CFG" "$CFG.bak-$(date +%Y%m%d-%H%M%S)"
+    cp "$SRC/config.json" "$NEWCFG"
+    echo "    已保留你现有的 config.json(旧值另存为 config.json.bak-<时间戳>)"
+    echo "    发行包里的新版默认配置已写到: $NEWCFG"
+    echo "    -> 新增/变更的键请自行合并:  diff $CFG $NEWCFG"
+    echo "    -> 想直接用新版:  sudo bash install.sh --reset-config"
+  fi
+else
+  install -m 0644 "$SRC/config.json" "$CFG"
+  rm -f "$NEWCFG"
+  [ "$RESET_CONFIG" = 1 ] && echo "    已按 --reset-config 覆盖为发行版默认配置"
+fi
+
+# 用**新代码**校验"最终会生效的那份配置"; 不通过就到此为止, 不动 hublane.py
+if ! "$PY" "$SRC/hublane.py" --config "$CFG" --check; then
+  echo >&2
+  echo "    错误: 保留下来的 config.json 用新版 hublane 校验不通过, 已中止安装。" >&2
+  echo "    你的配置原样未动。请把发行包里的新默认值合并进来再装一次:" >&2
+  echo "      diff $CFG $NEWCFG   # 看差异" >&2
+  echo "      # 改好后再 sudo bash install.sh" >&2
+  exit 1
+fi
+
+install -m 0755 "$SRC/hublane.py"   "$DEST/hublane.py"
+
+echo
 echo "==> [3/6] 配置校验 (P2)"
-"$PY" "$DEST/hublane.py" --config "$DEST/config.json" --check || exit 1
+"$PY" "$DEST/hublane.py" --config "$CFG" --check || exit 1
 
 echo "==> [4/6] 安装本地 CA 到系统信任库"
 if command -v update-ca-certificates >/dev/null 2>&1; then
@@ -140,7 +212,7 @@ After=network.target
 Type=simple
 Environment=PYTHONUNBUFFERED=1
 WorkingDirectory=$DEST
-ExecStart=$PY $DEST/hublane.py --config $DEST/config.json
+ExecStart=$PY $DEST/hublane.py --config $CFG
 Restart=always
 RestartSec=2
 
@@ -153,7 +225,7 @@ if systemctl enable --now hublane >/dev/null 2>&1; then
 else
   echo "    systemd 不可用, 回退为 nohup 直启"
   pkill -f hublane.py 2>/dev/null || true
-  nohup "$PY" "$DEST/hublane.py" --config "$DEST/config.json" >/tmp/hublane.log 2>&1 &
+  nohup "$PY" "$DEST/hublane.py" --config "$CFG" >/tmp/hublane.log 2>&1 &
 fi
 
 echo "==> [6/6] 配置 shell 代理变量 -> $SHELLRC"

@@ -68,11 +68,21 @@ def make_certs(directory):
                                                 "huggingface.co", "pypi.org",
                                                 "registry.npmjs.org"))
         fh.write("subjectAltName=%s,DNS:localhost,IP:127.0.0.1\n"
-                 "basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n" % extra)
+                 "basicConstraints=CA:FALSE\n"
+                 "keyUsage=critical,digitalSignature,keyEncipherment\n"
+                 "extendedKeyUsage=serverAuth\n" % extra)
+
     def run(*args):
         return subprocess.run([OPENSSL] + list(args), check=True, capture_output=True)
-    run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", ca_key,
-        "-out", ca_crt, "-days", "2", "-subj", "/O=hublane/CN=hublane test CA")
+    # CA 扩展与 hublane.py / install.sh 保持一致: 缺 keyUsage 会被 OpenSSL 3.5+ 拒绝校验
+    ca_ext = os.path.join(directory, "ca.ext")
+    ca_csr = os.path.join(directory, "ca.csr")
+    with open(ca_ext, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(H.CA_EXTENSIONS) + "\n")
+    run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", ca_key,
+        "-out", ca_csr, "-subj", "/O=hublane/CN=hublane test CA")
+    run("x509", "-req", "-in", ca_csr, "-signkey", ca_key,
+        "-extfile", ca_ext, "-days", "2", "-out", ca_crt)
     run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", leaf_key, "-out", csr,
         "-subj", "/O=hublane/CN=hublane test leaf")
     run("x509", "-req", "-in", csr, "-CA", ca_crt, "-CAkey", ca_key,
@@ -386,8 +396,8 @@ class ProxyTestCase(unittest.TestCase):
 
     def http_get(self, path, port=None, headers=()):
         """直连明文端口(指标端点), 返回 (状态码, 头, 体)"""
-        raw = socket.create_connection(("127.0.0.1", port or self.metrics_port),
-                                      timeout=8)
+        addr = ("127.0.0.1", port or self.metrics_port)
+        raw = socket.create_connection(addr, timeout=8)
         try:
             lines = ["GET %s HTTP/1.1" % path, "Host: 127.0.0.1"]
             lines += ["%s: %s" % kv for kv in headers]
@@ -418,6 +428,42 @@ class MirrorEndToEndTest(ProxyTestCase):
         self.assertIn(b"200", data.split(b"\r\n")[0])
         self.assertTrue(self.plain.requests)
         self.assertIn(b"Content-Length: 3", self.plain.requests[-1])
+
+
+class GithubMirrorTest(ProxyTestCase):
+    """github.com 走镜像: 这是 git clone/fetch 能用的前提
+
+    原先 github.com 只有 direct / watt 两个上游。direct 在受限网络里会被
+    在正好 128 KiB 处掐断(实测 SSLEOFError, 传输中断于 131072 字节),
+    于是任何大于 128 KiB 的响应(pack)都下不来。前缀式镜像由境外取回后
+    原样返回, 绕开这个限制 —— 所以 github 必须能走镜像。
+    """
+
+    GITHUB_UPSTREAMS = ["local_gh"]
+
+    def build_config(self, cfg):
+        cfg["custom_mirrors"]["local_gh"] = \
+            "http://127.0.0.1:%d/ok{path}" % self.plain.port
+        return cfg
+
+    def test_github_get_via_mirror(self):
+        data = self.mitm_get("github.com",
+                             "/o/r.git/info/refs?service=git-upload-pack")
+        self.assertTrue(data.startswith(b"HTTP/1.1 200"), data[:80])
+        self.assertIn(b"/o/r.git/info/refs?service=git-upload-pack", data,
+                      "路径应原样透传给镜像")
+        self.assertTrue(self.plain.requests, "镜像站没收到请求")
+
+    def test_github_post_body_reaches_mirror(self):
+        """git-upload-pack 是 POST 带体的, body 必须完整转发"""
+        body = b"0014command=fetch\x000000"
+        data = self.mitm_request("github.com", "/o/r.git/git-upload-pack",
+                                 method="POST", body=body)
+        self.assertIn(b"200", data.split(b"\r\n")[0], data[:80])
+        self.assertTrue(self.plain.requests)
+        self.assertIn(b"Content-Length: %d" % len(body),
+                      self.plain.requests[-1],
+                      "请求体长度不对, git 会一直等响应")
 
 
 class TruncatedFallbackTest(ProxyTestCase):

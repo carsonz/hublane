@@ -1,0 +1,19 @@
+# 本项目同时在 WSL(Linux) 与 Windows 上开发, 两边都靠脚本安装,
+# 因此换行符必须固定, 否则:
+#   - core.autocrlf=true 会把 install.sh 存成 CRLF, 在 WSL 上执行
+#     ./install.sh 会报 "bad interpreter: /usr/bin/env bash^M";
+#   - 反之 .bat 被存成 LF 时, cmd.exe 解析括号块会出错。
+* text=auto
+
+# 必须在 Linux/WSL 下执行的脚本 -> LF
+*.sh text eol=lf
+Makefile text eol=lf
+
+# 必须由 cmd.exe 执行的脚本 -> CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 证书/扩展名文件保持文本
+*.crt text
+*.ext text

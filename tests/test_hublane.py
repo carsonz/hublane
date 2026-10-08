@@ -12,6 +12,7 @@ import re
 import shutil
 import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -84,10 +85,193 @@ class TestMirrorLibrary(unittest.TestCase):
 
     def test_all_builtin_mirrors_pass_validation(self):
         known = H._known_upstreams()
-        for name in list(H.MIRROR_PREFIX) + list(H.JSDELIVR_HOSTS) + list(H.SITE_MIRRORS):
+        for name in (list(H.MIRROR_PREFIX) + list(H.GH_MIRROR_PREFIX)
+                     + list(H.JSDELIVR_HOSTS) + list(H.SITE_MIRRORS)):
             self.assertIn(name, known)
         H.CONFIG["raw_upstreams"] = list(H.MIRROR_PREFIX) + list(H.JSDELIVR_HOSTS)
         self.assertEqual(H.validate_config(), [])
+
+
+class TestGithubMirrorPrefix(unittest.TestCase):
+    """github.com 专用镜像(给 git 的 smart-HTTP 用)
+
+    背景: raw 镜像(MIRROR_PREFIX)全部写死指向 raw.githubusercontent.com,
+    服务不了 github.com。而 git clone/fetch 打的是 github.com:443, 原先只有
+    direct / watt —— direct 会被链路在正好 128 KiB 处掐断, 大仓库的 pack
+    永远下不来(实测 SSLEOFError, 传输中断于 131072 字节)。所以 github 需要
+    自己一套前缀式镜像。
+    """
+
+    PATH = "/deepseek-ai/deepseek-harness.git/info/refs?service=git-upload-pack"
+
+    def setUp(self):
+        H.CONFIG.clear()
+        H.CONFIG.update(H.DEFAULTS)
+
+    def test_mirrors_embed_github_host(self):
+        """前缀里必须嵌 https://github.com, 否则镜像站不知道去哪取"""
+        for name in H.GH_MIRROR_PREFIX:
+            url = H.mirror_url(name, self.PATH)
+            self.assertTrue(url, name)
+            self.assertIn("https://github.com", url, name)
+            self.assertTrue(url.endswith(self.PATH), "%s -> %s" % (name, url))
+
+    def test_distinct_from_raw_mirrors(self):
+        """同名服务的 raw 版与 github 版指向不同主机, 不得串台"""
+        self.assertIn("raw.githubusercontent.com",
+                      H.mirror_url("ghproxy_com", self.PATH))
+        self.assertIn("github.com", H.mirror_url("ghproxy_com_gh", self.PATH))
+        self.assertNotIn("raw.", H.mirror_url("ghproxy_com_gh", self.PATH))
+        self.assertIn("github.com", H.mirror_url("ghfast_gh", self.PATH))
+
+    def test_github_upstreams_default_has_mirror_ahead_of_direct(self):
+        """默认链里镜像必须排在 direct 之前, 否则会先撞上 128 KiB 掐断"""
+        chain = list(H.DEFAULTS["github_upstreams"])
+        self.assertIn("ghproxy_com_gh", chain)
+        self.assertIn("direct", chain)
+        self.assertLess(chain.index("ghproxy_com_gh"), chain.index("direct"),
+                        "镜像应优先于 direct: %s" % chain)
+        self.assertTrue(any(n in H.GH_MIRROR_PREFIX for n in chain[:3]),
+                        "前几个应是镜像: %s" % chain)
+
+    def test_github_mirrors_pass_validation(self):
+        H.CONFIG["github_upstreams"] = list(H.GH_MIRROR_PREFIX) + ["direct", "watt"]
+        self.assertEqual(H.validate_config(), [])
+
+
+class TestUtf8Console(unittest.TestCase):
+    """非 UTF-8 控制台下不能崩
+
+    实测事故: GitHub windows-latest runner 是英文 locale(cp1252), Python 的
+    stdout 默认用 cp1252, 而本项目日志/提示全是中文 —— `python hublane.py
+    --check` 与 `python tools/check_version.py` 一打印就 UnicodeEncodeError,
+    五个 Windows 矩阵任务全红。
+    """
+
+    def test_ensure_utf8_console_changes_encoding(self):
+        saved_out, saved_err = sys.stdout, sys.stderr
+        try:
+            buf_out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252",
+                                       errors="strict")
+            buf_err = io.TextIOWrapper(io.BytesIO(), encoding="cp1252",
+                                       errors="strict")
+            sys.stdout, sys.stderr = buf_out, buf_err
+            H.ensure_utf8_console()
+            self.assertEqual(sys.stdout.encoding.lower().replace("-", ""), "utf8")
+            self.assertEqual(sys.stderr.encoding.lower().replace("-", ""), "utf8")
+        finally:
+            sys.stdout, sys.stderr = saved_out, saved_err
+
+    def test_emit_survives_narrow_console(self):
+        """cp1252 下打印中文: emit 必须成功, 不能抛异常"""
+        saved_out = sys.stdout
+        try:
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252",
+                                          errors="strict")
+            H.ensure_utf8_console()
+            H.emit("配置校验通过 —— 中文提示")     # 不应抛 UnicodeEncodeError
+        finally:
+            sys.stdout = saved_out
+
+    def test_emit_without_reconfigure_does_not_crash_process(self):
+        """兜底: 即使流没被切成 UTF-8, emit 也不能把异常抛给调用方"""
+        saved_out, handlers = sys.stdout, list(H.log.handlers)
+        try:
+            sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252",
+                                          errors="strict")
+            H.log.handlers = []          # 去掉会写同一条流的 StreamHandler
+            H.emit("中文")                # write 失败 -> 退到日志 -> 无 handler
+        finally:
+            sys.stdout = saved_out
+            H.log.handlers = handlers
+
+    def test_gate_script_runs_under_narrow_console(self):
+        """端到端复现 CI 事故: cp1252 下跑 check_version.py 必须退出码 0
+
+        这正是 GitHub windows-latest 五个矩阵任务失败的那一步
+        (UnicodeEncodeError: 'charmap' codec can't encode ...)。
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ, PYTHONIOENCODING="cp1252")
+        for args in ([], ["v0.1.1"]):
+            proc = subprocess.run(
+                [sys.executable, os.path.join(root, "tools", "check_version.py")]
+                + args, env=env, capture_output=True, cwd=root)
+            self.assertEqual(proc.returncode, 0,
+                             "cp1252 下 args=%s 失败: %s"
+                             % (args, proc.stderr.decode("utf-8", "replace")[-300:]))
+
+    def test_hublane_check_runs_under_narrow_console(self):
+        saved = H.CONFIG.get("raw_upstreams")
+        try:
+            H.CONFIG.update(H.DEFAULTS)
+            cfg = os.path.join(self.tmpdir, "cfg.json")
+            with io.open(cfg, "w", encoding="utf-8") as fh:
+                json.dump(dict(H.DEFAULTS), fh)
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            env = dict(os.environ, PYTHONIOENCODING="cp1252")
+            proc = subprocess.run(
+                [sys.executable, os.path.join(root, "hublane.py"),
+                 "--config", cfg, "--check"],
+                env=env, capture_output=True, cwd=root)
+            self.assertEqual(proc.returncode, 0,
+                             proc.stderr.decode("utf-8", "replace")[-300:])
+        finally:
+            if saved is not None:
+                H.CONFIG["raw_upstreams"] = saved
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp(prefix="hl-utf8-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+
+class TestPanelScroll(unittest.TestCase):
+    """"最近请求"与"已校验真实 IP"两块固定高度 + 滚动
+
+    这两块条数多、信息价值低(排障时看前几条就够), 不限高会把页脚顶出屏幕。
+    """
+
+    def setUp(self):
+        H.CONFIG.clear()
+        H.CONFIG.update(H.DEFAULTS)
+
+    def test_both_sections_wrapped_in_scroll_container(self):
+        html = H.panel_html()
+        self.assertEqual(html.count('<div class="scroll">'), 2)
+        self.assertIn('<h2>最近请求</h2>\n<div class="scroll">', html)
+        self.assertIn('<h2>已校验真实 IP</h2>\n<div class="scroll">', html)
+
+    def test_scroll_container_has_fixed_height_and_overflow(self):
+        html = H.panel_html()
+        self.assertIn("max-height:%dpx" % H._scroll_px(), html)
+        self.assertIn("overflow-y:auto", html)
+        self.assertIn("overflow-x:auto", html)
+
+    def test_header_sticks_while_scrolling(self):
+        """表头吸顶: 滚动时仍能对列"""
+        self.assertIn(".scroll thead th{position:sticky", H.panel_html())
+
+    def test_height_follows_config(self):
+        H.CONFIG["panel_scroll_rows"] = 20
+        self.assertEqual(H._scroll_px(), 20 * 29)
+
+    def test_height_clamped_to_sane_range(self):
+        for rows, expect in ((1, 5), (5, 5), (40, 40), (9999, 40)):
+            H.CONFIG["panel_scroll_rows"] = rows
+            self.assertEqual(H._scroll_px(), expect * 29, rows)
+
+    def test_bad_value_falls_back_to_default(self):
+        for bad in ("abc", None, "", []):
+            H.CONFIG["panel_scroll_rows"] = bad
+            self.assertEqual(H._scroll_px(), 16 * 29, bad)
+
+    def test_other_sections_not_scrolled(self):
+        """只有这两块限高; 健康度/DoH/延迟表要完整展示"""
+        html = H.panel_html()
+        self.assertNotIn('<div class="scroll"><table><tr><th>域名</th><th>上游</th>',
+                         html)
 
 
 class TestSiteMirrors(unittest.TestCase):
@@ -367,6 +551,76 @@ class TestCertSan(unittest.TestCase):
                 found = set(re.findall(r"DNS:[A-Za-z0-9.*\-]+", fh.read()))
             missing = sorted(want - found)
             self.assertEqual(missing, [], "%s 缺少 SAN: %s" % (name, missing[:5]))
+
+
+class TestCaExtensions(unittest.TestCase):
+    """CA 必须带 keyUsage/basicConstraints, 否则 OpenSSL 3.5+ 拒绝校验
+
+    回归: 2026-10 在 Python 3.13 / OpenSSL 3.6 上实测
+    "CA cert does not include key usage extension", 15 个集成用例全挂。
+    openssl <= 3.0 容忍缺 keyUsage 的 CA, 所以 CI 用老 openssl 发现不了。
+    """
+
+    def test_ca_extensions_are_declared(self):
+        joined = " ".join(H.CA_EXTENSIONS)
+        self.assertIn("CA:TRUE", joined)
+        self.assertIn("keyCertSign", joined)
+        self.assertIn("critical", joined)
+
+    def test_leaf_extensions_are_declared(self):
+        joined = " ".join(H.LEAF_EXTENSIONS)
+        self.assertIn("CA:FALSE", joined)
+        self.assertIn("serverAuth", joined)
+
+    def test_installers_use_the_same_ca_extensions(self):
+        """install.sh / install-windows.bat 不能落后于 hublane.py"""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("install.sh", "install-windows.bat"):
+            with open(os.path.join(root, name), encoding="utf-8") as fh:
+                text = fh.read()
+            for ext in H.CA_EXTENSIONS:
+                self.assertIn(ext, text, "%s 缺少 CA 扩展: %s" % (name, ext))
+            for ext in H.LEAF_EXTENSIONS:
+                self.assertIn(ext, text, "%s 缺少叶证书扩展: %s" % (name, ext))
+
+    @unittest.skipUnless(shutil.which("openssl"), "需要 openssl")
+    def test_generated_ca_passes_strict_verification(self):
+        """真正生成一次 CA+叶证书, 并用 openssl verify 校验链"""
+        import subprocess
+        import tempfile
+        tmp = tempfile.mkdtemp(prefix="hublane-ca-test-")
+        try:
+            def run(*args):
+                return subprocess.run(["openssl"] + list(args), check=True,
+                                      capture_output=True)
+            ca_key = os.path.join(tmp, "ca.key")
+            ca_crt = os.path.join(tmp, "ca.crt")
+            ca_csr = os.path.join(tmp, "ca.csr")
+            ca_ext = os.path.join(tmp, "ca.ext")
+            with open(ca_ext, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(H.CA_EXTENSIONS) + "\n")
+            run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", ca_key,
+                "-out", ca_csr, "-subj", H.CA_SUBJECT)
+            run("x509", "-req", "-in", ca_csr, "-signkey", ca_key,
+                "-extfile", ca_ext, "-days", "2", "-out", ca_crt)
+            text = run("x509", "-noout", "-text", "-in", ca_crt).stdout.decode()
+            self.assertIn("Certificate Sign", text)
+            self.assertIn("CA:TRUE", text)
+            leaf_key = os.path.join(tmp, "s.key")
+            leaf_crt = os.path.join(tmp, "s.crt")
+            csr = os.path.join(tmp, "s.csr")
+            ext = os.path.join(tmp, "leaf.ext")
+            with open(ext, "w", encoding="utf-8") as fh:
+                fh.write("subjectAltName=DNS:localhost,IP:127.0.0.1\n%s\n"
+                         % "\n".join(H.LEAF_EXTENSIONS))
+            run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", leaf_key,
+                "-out", csr, "-subj", H.LEAF_SUBJECT)
+            run("x509", "-req", "-in", csr, "-CA", ca_crt, "-CAkey", ca_key,
+                "-CAcreateserial", "-out", leaf_crt, "-days", "2", "-extfile", ext)
+            out = run("verify", "-CAfile", ca_crt, leaf_crt).stdout.decode()
+            self.assertIn("OK", out)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class TestDiag(unittest.TestCase):
@@ -739,6 +993,79 @@ class TestPerHostUpstreams(unittest.TestCase):
         self.assertTrue(any("未知上游" in e for e in H.validate_config()))
         H.CONFIG["per_host_upstreams"] = {"a.com": []}
         self.assertTrue(any("非空列表" in e for e in H.validate_config()))
+
+
+class TestCredentialAwareChain(unittest.TestCase):
+    """敏感请求(带凭证 / git 写操作)不得投递给第三方镜像
+
+    两条动机缺一不可:
+
+    - 功能上: 公共镜像是匿名只读的, 没有授权代表客户端写 GitHub,
+      所以 push 必然拿到 401;
+    - 安全上: ``Authorization`` 是端到端头, 不在 ``_HOP_HEADERS`` 中,
+      会被原样转发 —— 交给镜像等于把凭证泄漏给第三方运营方。
+    """
+
+    def setUp(self):
+        H.CONFIG.clear()
+        H.CONFIG.update(H.DEFAULTS)
+        with H._ustat_lock:
+            H._ustat.clear()
+
+    def _third(self):
+        return H._third_party_upstreams()
+
+    def test_anonymous_read_still_uses_mirrors(self):
+        """回归防线: 匿名读必须仍优先走镜像, 否则丢掉核心价值"""
+        chain = H.build_chain("github.com", "/o/r.git/git-upload-pack", "GET", {})
+        self.assertEqual(chain[0], "ghproxy_com_gh")
+        self.assertIn("ghfast_gh", chain)
+
+    def test_git_fetch_not_sensitive(self):
+        """git fetch/clone 不算写操作, 仍可放心走镜像"""
+        self.assertFalse(H.is_sensitive("POST", "/o/r.git/git-upload-pack", {}))
+
+    def test_credential_marks_sensitive(self):
+        self.assertTrue(H.is_sensitive("GET", "/x", {"Authorization": "token a"}))
+
+    def test_credential_header_case_insensitive(self):
+        self.assertTrue(H.is_sensitive("GET", "/x", {"authorization": "token a"}))
+
+    def test_git_push_marks_sensitive(self):
+        self.assertTrue(H.is_sensitive("POST", "/o/r.git/git-receive-pack", {}))
+
+    def test_no_third_party_for_credentialed(self):
+        chain = H.build_chain("github.com", "/o/r/info/refs", "GET",
+                              {"Authorization": "token a"})
+        self.assertTrue(chain)
+        for name in chain:
+            self.assertNotIn(name, self._third(),
+                             "带凭证的请求走第三方镜像会泄漏凭证: %s" % name)
+        self.assertIn("direct", chain)
+
+    def test_no_third_party_for_git_push(self):
+        chain = H.build_chain("github.com", "/o/r.git/git-receive-pack", "POST", {})
+        for name in chain:
+            self.assertNotIn(name, self._third())
+        self.assertEqual(chain, ["direct", "watt"])
+
+    def test_fallback_to_direct_when_all_third_party(self):
+        """上游全是第三方时兜底 direct, 而不是把凭证交出去"""
+        self.assertEqual(H.restrict_upstreams(["ghproxy_com_gh"], True), ["direct"])
+
+    def test_not_sensitive_passes_through_untouched(self):
+        names = ["ghproxy_com_gh", "direct"]
+        self.assertEqual(H.restrict_upstreams(names, False), names)
+
+    def test_raw_host_also_protected(self):
+        chain = H.build_chain("raw.githubusercontent.com", "/a/b.txt", "GET",
+                              {"Authorization": "token a"})
+        for name in chain:
+            self.assertNotIn(name, self._third())
+
+    def test_two_arg_call_still_anonymous(self):
+        """向后兼容: 不传 method/headers 时按匿名处理"""
+        self.assertEqual(H.build_chain("github.com", "/x")[0], "ghproxy_com_gh")
 
 
 class TestDoHEndpoints(unittest.TestCase):

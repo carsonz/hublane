@@ -48,7 +48,10 @@ fi
 [ "$removed" = 1 ] && echo "    已移除" || echo "    未找到已安装的 CA"
 
 echo "==> [4/5] 清理 shell 代理变量"
-for rc in "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" "$USER_HOME/.profile"; do
+# 清理所有可能被写入的 rc: install.sh 现在按登录 shell 选文件
+# (zsh -> .zshenv, bash -> .bashrc, 其它 -> .profile), 但历史版本写过 .zshrc,
+# 所以这里全查一遍, 避免漏掉旧版留下的块。
+for rc in "$USER_HOME/.zshenv" "$USER_HOME/.zshrc" "$USER_HOME/.bashrc" "$USER_HOME/.profile"; do
   [ -f "$rc" ] || continue
   if grep -q ">>> hublane relay >>>" "$rc"; then
     cp "$rc" "$rc.hublane.bak"

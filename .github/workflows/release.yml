@@ -27,7 +27,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 版本一致性门禁 (tag / hublane.py / pyproject.toml)
+      - name: 版本门禁 (tag 必须等于 hublane.py 的 VERSION, 且版本号只有这一处来源)
         run: python tools/check_version.py "${{ github.event.inputs.tag || github.ref_name }}"
 
       - name: 测试门禁

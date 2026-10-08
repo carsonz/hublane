@@ -17,17 +17,34 @@
 
 | 维度 | 结论 |
 |---|---|
-| 体积 | 预期 8–15 MB（含 Python 解释器与 ssl/ctypes） |
+| 体积 | 预期 8–15 MB（含 Python 解释器与 ssl/ctypes）。**2026-10-08 实测：Python 3.13 下单文件 24 MB**（conda 的 OpenSSL/libpython 一起被打进去） |
 | 杀软误报 | **风险点**：PyInstaller 产物常被误报；需代码签名才能缓解，而签名证书要钱 |
 | 证书生成 | Windows 通常没有系统 `openssl`，exe 依赖 Git for Windows 的 `openssl.exe`；已在 `find_openssl()` 里覆盖常见路径，但仍需"用户没装 Git"的兜底（预生成模式或随包附带 openssl） |
 | 服务模式 | `--service` 用 ctypes 调 SCM，打包后仍可用；需实测 |
 | 升级 | 覆盖 exe 即升级，与 `sc stop/start` 配合即可 |
 | 成本 | 小（CI 加一条 Windows job，约半天）；**但验证需要一台干净的 Windows 机器** |
 
+**Linux 上的实测结果（2026-10-08，`tools/build_exe.sh --smoke`）**
+
+方案成立，但"跑通 PyInstaller"不等于能用 —— 冻结形态有两个**必须先解决**的坑，
+都是实测撞出来的、文档里原本没有的：
+
+1. **`INSTALL_DIR` 落在临时解压目录**。冻结后 `__file__` 在 `_MEIxxxx` 下，进程退出
+   即删除；证书/配置/状态写进去等于每次启动全部丢失，CA 也要重新信任（不可用）。
+   已修：冻结形态改用稳定目录（`%LOCALAPPDATA%\hublane`，`HUBLANE_HOME` 可覆盖）。
+2. **`openssl req -addext` 会让子进程 SIGSEGV**。`-addext` 强制 openssl 载入
+   配置/provider，冻结产物里与被打进去的 `libcrypto` 冲突；不带 `-addext` 的同一
+   命令正常。**这不是 Linux 独有现象的证明，但它是 `-addext` 这条路走不通的铁证。**
+   已修：CA 改用 `CSR + x509 -signkey` + `-extfile`（与叶证书同一条机制），
+   `req -x509` 本来也不接受 `-extfile`，只能退回 `-addext`。
+
+修完后 Linux 上"打包 → 生成证书 → 校验证书链 → 干净退出"全流程通过。
+`--service`、杀软误报、体积优化仍需 Windows。
+
 **结论**：方案成立，收益明确（免 Python 安装）。**但不在 0.1.0 内排期**——
 本机（Linux）无法验证 exe 的体积/误报/服务模式，交付一个没验证过的产物不符合本项目标准。
-排到 **v0.2.0**：先在 Windows 上手工跑通一次 PyInstaller（含证书兜底方案），
-再把产物接入 CI。若跑通，**Rust/Go 移植正式关闭**。
+排到 **v0.2.0**：先在 Windows 上手工跑通一次 PyInstaller（Linux 侧的两个阻塞点已清，
+见上），再把产物接入 CI。若跑通，**Rust/Go 移植正式关闭**。
 
 ---
 

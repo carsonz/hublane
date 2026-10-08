@@ -1,0 +1,11 @@
+{
+  "requests": 200,
+  "concurrency": 8,
+  "size": 65536,
+  "wall_seconds": 0.661,
+  "rps": 302.4,
+  "p50_ms": 23.6,
+  "p95_ms": 34.2,
+  "avg_ms": 24.4,
+  "failures": 0
+}

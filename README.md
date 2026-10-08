@@ -4,9 +4,13 @@ English | [简体中文](./README.zh-CN.md)
 
 > **hublane** — a local relay proxy that makes GitHub reliably reachable from WSL and Windows.
 > Pure Python standard library. Zero third-party dependencies. One codebase, both platforms.
-> Version **0.1.0** — first release: relay core (streaming, SOCKS5 + HTTP on one port),
-> adaptive upstream chains, the HTML panel with `/status` / `/requests` / `/diag`,
-> the hardening baseline and the install scripts all ship together. The Rust/Go
+> Version **0.1.1** — fixes packaging, install and relay issues found by hands-on testing
+> on WSL/Ubuntu + Python 3.13, and adds a mirror chain for github.com (fixes hanging
+> `git clone/pull`). The version lives in exactly one place: `VERSION` in `hublane.py`;
+> the packaging config reads it at build time.
+> Relay core (streaming, SOCKS5 + HTTP on one port), adaptive upstream chains,
+> the HTML panel with `/status` / `/requests` / `/diag`, the hardening baseline
+> and the install scripts ship together. The Rust/Go
 > port is deliberately not planned; see [ROADMAP](./ROADMAP.md),
 > [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and
 > [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
@@ -133,7 +137,7 @@ sudo bash ~/hublane/install.sh --dry-run           # print the steps, change not
 sudo bash ~/hublane/install.sh -y --skip-verify    # non-interactive
 ```
 
-The script: deploys to `/opt/hublane` → config validation → installs the CA into the system trust store (Debian `update-ca-certificates`, automatic fallback to RPM `update-ca-trust`) → writes a systemd unit (`Restart=always`) → injects proxy variables into your shell config (auto-detects zsh/bash) → verifies the three target commands.
+The script: deploys to `/opt/hublane` (an **existing `config.json` is preserved**; the new defaults are written to `config.json.new` for you to merge) → config validation → installs the CA into the system trust store (Debian `update-ca-certificates`, automatic fallback to RPM `update-ca-trust`) → writes a systemd unit (`Restart=always`) → injects proxy variables into your shell config (picked from the login shell recorded in passwd: zsh -> `~/.zshenv`, bash -> `~/.bashrc`; `.zshenv` rather than `.zshrc` because zsh reads it for every shell, not just interactive ones) → verifies the three target commands.
 
 To uninstall: `sudo bash uninstall.sh` (stops the service, removes the CA and the shell
 block; add `--purge` to delete `/opt/hublane` too).
@@ -189,7 +193,14 @@ curl -X POST http://127.0.0.1:28898/reload   # hot-reload config (POSIX: kill -H
 sudo journalctl -u hublane -f        # logs (WSL)
 python hublane.py --check            # config validation
 python hublane.py --renew-certs      # renew the leaf cert (keeps the CA); --renew-ca renews both
-python -m unittest discover -s tests # unit + integration tests (148 cases, no internet needed)
+python -m unittest discover -s tests # unit + integration tests (165 cases, no internet needed)
+
+# Windows only: build a standalone hublane.exe (no Python needed on the target)
+pwsh -File tools/setup-windows-env.ps1    # winget: Python + OpenSSL, creates .venv
+python tools/build-exe.py                 # -> dist/hublane.exe (--one-dir lowers AV false positives)
+
+# Windows admin-grade end-to-end check (task mode + service mode, self-cleaning)
+pwsh -Command "Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File','tools\verify-windows.ps1' -Wait"
 ```
 
 The panel, JSON, PAC, samples, diag bundle and reload all accept `metrics_token`
@@ -207,7 +218,7 @@ WSL: `/opt/hublane/config.json`; Windows: `%LOCALAPPDATA%\hublane\config.json`.
 | Key | Description |
 |---|---|
 | `raw_upstreams` | raw mirror chain (initial order only; re-ranked by EWMA × success rate) |
-| `github_upstreams` | default `["direct", "watt"]` |
+| `github_upstreams` | default `["ghproxy_com_gh", "ghfast_gh", "ghproxy_net_gh", "direct", "watt"]` (mirrors must precede `direct`, see below) |
 | `per_host_upstreams` | per-domain chains, wildcards supported: `{"github.com": ["watt","direct"], "*.example.com": ["chain"]}`; mentioning a host here also marks it as managed |
 | `extra_hosts` / `extra_upstreams` | additional managed sites and their chain |
 | `custom_mirrors` | custom mirror templates `{"name": "https://host/{path}"}` |
@@ -223,6 +234,7 @@ WSL: `/opt/hublane/config.json`; Windows: `%LOCALAPPDATA%\hublane\config.json`.
 | `cert_expire_warn_days` | warn at startup when a certificate has fewer days left (90); renew with `--renew-certs` |
 | `proxy_token` / `proxy_uid_whitelist` | local access control: proxy password (HTTP `407` / SOCKS5 user+pass) / allowed uid list (Linux) |
 | `log_format` / `sample_size` | log format `text` or `json` (single-line structured) / number of recent request samples (0 = off) |
+| `panel_scroll_rows` | how many rows the panel's "recent requests" and "verified IPs" blocks show (fixed height + scroll; 5-40, default 16) |
 | `extra_host_groups` / `extra_host_groups_enabled` | curated foreign-site groups and their on/off switches, see below |
 | `integrity_check` / `integrity_buffer_max` | response integrity check / size limit for buffered verification (1 MiB) |
 | `success_window` / `success_min_samples` / `success_floor` | sliding window size / samples needed to count as proven / demotion threshold |
@@ -286,9 +298,11 @@ CSS still references the blocked gstatic host.
 - Performs **TLS interception** on managed domains and installs its own CA (`hublane Local Relay CA`). The private key never leaves the machine.
 - Startup warns when the key files are group/world readable (POSIX); `chmod 600 server.key ca.key` is recommended.
 - The panel binds to `127.0.0.1` by default (no token needed). Binding `metrics_host` to a non-loopback address **requires** `metrics_token`, otherwise config validation refuses to start.
-- **The proxy itself is unauthenticated by default**: any process on the machine can relay through it. On multi-user machines (or when running as a LocalSystem service) set `proxy_token` — HTTP uses `Proxy-Authorization`, SOCKS5 uses username/password (password = token); on Linux you can also restrict callers with `proxy_uid_whitelist`. Certificates start warning 90 days before expiry; renew with `--renew-certs`.
+- **The proxy itself is unauthenticated by default**: any process on the machine can relay through it. On multi-user machines (or when running as a LocalSystem service) set `proxy_token` — HTTP uses `Proxy-Authorization`, SOCKS5 uses username/password (password = token); on Linux you can also restrict callers with `proxy_uid_whitelist`. Three spellings are accepted: `Basic base64(user:token)` (standard, e.g. `curl -U any:token`), `Basic base64(token)` (username omitted), and `Bearer token`. Certificates start warning 90 days before expiry; renew with `--renew-certs`.
 - raw content is fetched through third-party mirrors; the default first choice is `gh-proxy.com` (fetches live, unmodified content).
   For higher trust, set `raw_upstreams` to `["jsdelivr_fastly"]` (mainstream CDN, but has cache lag and file-size limits).
+- **Requests that carry credentials are never sent to third-party mirrors.** `Authorization` is an end-to-end header, so relaying it to a public mirror would hand your token to whoever operates that mirror. hublane therefore detects an `Authorization` header (or a `git-receive-pack` write, i.e. `git push`) and restricts such requests to upstreams you control (`direct` / `watt` / `chain`). Consequence: **`git push` is not relayed** — use SSH (`git remote set-url origin git@github.com:OWNER/REPO.git`) or bypass the proxy for that one command (`git -c http.proxy= -c https.proxy= push`). Anonymous `git clone` / `fetch` are unaffected and still benefit from mirrors.
+- **If you ever used a GitHub PAT through hublane, revoke and reissue it.** Older versions forwarded it to third-party mirror operators; rotating the token is the only way to retire a credential that has already leaked.
 - Verify checksums for anything security-sensitive.
 
 ## Known limitations
@@ -306,6 +320,34 @@ CSS still references the blocked gstatic host.
   background probing — their health comes from real traffic only, while raw mirrors
   are probed every 120 s.
 - Troubleshooting: [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
+
+## Troubleshooting
+
+Full manual with numbered cases: [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
+
+**Windows gotchas confirmed during Windows verification** — every row below was
+reproduced on Windows 11, not guessed:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `curl: (60) schannel: the revocation status is unknown` | Windows schannel performs an OCSP revocation check; a locally generated CA has no responder | add `--ssl-no-revoke`, and pass `--cacert %LOCALAPPDATA%\hublane\ca.crt` |
+| `SSL: CA cert does not include key usage extension` | Python 3.14 / OpenSSL 3.5 rejects a CA cert without the `keyUsage` extension | `python hublane.py --renew-ca`, then reinstall trust in the root store |
+| A `.bat` prints `xxx was unexpected at this time.` | inside an `if (...)` block, an `echo` line mixing non-ASCII text with ASCII `()` breaks cmd's block parser | keep `.bat` files UTF-8, and avoid parentheses in `echo` text |
+| `./install.sh: bad interpreter: /usr/bin/env bash^M` (WSL) | the shell script was checked out with CRLF | a `.gitattributes` pins `.sh` to LF and `.bat` to CRLF; re-clone if you have an old checkout |
+| Proxy dies a few seconds after logon, nothing in the log | the generated `run-loop.bat` called `py`, which is not on the scheduled task's PATH | fixed — re-run `install-windows.bat`; the absolute interpreter path is now baked in |
+| `ERROR: Input redirection is not supported` | `wscript.exe` launched with redirected stdin (CI, agents, SSH) | harmless artifact of non-interactive sessions |
+| Process lingers a few seconds after `sc stop` | `concurrent.futures`' atexit hook joins its thread pool, waiting for in-flight DoH requests | by design: the SCM wait hint is 30 s, measured exit is ~10–15 s |
+| Switching from task mode to service mode: an unknown `python.exe` holds the port | `run-loop.bat` is a `goto loop` loop, so the old supervisor relaunches python | step `[3/6]` now kills the whole process tree by command line; reinstall once |
+| `openssl` not found | Windows ships no system OpenSSL; only Git for Windows bundles one | `pwsh -File tools/setup-windows-env.ps1` installs it via winget |
+
+**Reading the panel counters.** `HTTP requests` counts only requests that hublane
+decrypted (MITM). Pure TCP tunnels — non-managed domains, plain `http://`, SSH — are
+counted separately as `Tunnel connections` / `Tunnel failures` / `Tunnel bytes`, so
+total traffic is visible without corrupting the HTTP numbers. `Upstream failures`
+counts *per upstream attempt*: one request that tries three upstreams adds three, so
+it can legitimately exceed the request count. Tunnel durations are deliberately kept
+out of the latency percentiles, since a tunnel may live for minutes and would skew
+P50/P95. Hover any card for its exact definition.
 
 ## Legal & responsible use
 

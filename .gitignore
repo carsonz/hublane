@@ -6,7 +6,36 @@ __pycache__/
 state.json
 *.log
 hublane.log
-bench/baseline.json
+
+# 注意: bench/baseline.json **要入库** —— 它是压测回归基线, CI 的
+# bench --check 依赖它; 重新采集用 `make bench-save`。
+
+# ---- 构建产物 ----
+dist/
+build/
+*.egg-info/
+.eggs/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+
+# ---- 本地虚拟环境(conda/venv) ----
+.venv/
+venv/
+env/
+
+# ---- Windows 验证工具链 (tools/setup-windows-env.ps1, tools/build-exe.py) ----
+.venv/
+venv/
+build/
+dist/
+*.spec
+hublane.egg-info/
+.coverage
+.coverage.*
+htmlcov/
 
 # ---- Private keys & generated certificates: NEVER commit ----
 # Certificates are generated locally at install time (see install.sh /

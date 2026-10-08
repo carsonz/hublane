@@ -9,7 +9,7 @@
   "proxy_token": "",
   "proxy_uid_whitelist": [],
   "raw_upstreams": ["ghproxy_com", "jsdelivr_fastly", "ghproxy", "jsdelivr", "jsdelivr_gcore", "jsdelivr_cf", "ghfast", "ghp_ci", "gitdl"],
-  "github_upstreams": ["direct", "watt"],
+  "github_upstreams": ["ghproxy_com_gh", "ghfast_gh", "ghproxy_net_gh", "direct", "watt"],
   "extra_hosts": [
     "hcaptcha.com", "assets.hcaptcha.com", "imgs.hcaptcha.com",
     "www.hcaptcha.com", "js.hcaptcha.com", "newassets.hcaptcha.com",

@@ -44,7 +44,11 @@ package:  ## 本地打包(源码 tar.gz + sdist + wheel + SHA256SUMS)
 	@VER=$$($(PY) -c "import re;print(re.search(r'VERSION = \"([^\"]+)\"', open('hublane.py').read()).group(1))"); \
 	mkdir -p dist; \
 	git archive --format=tar.gz --prefix="hublane-$$VER/" -o "dist/hublane-$$VER.tar.gz" HEAD; \
-	$(PY) -m build --sdist --wheel --outdir dist 2>/dev/null || echo "(跳过 sdist/wheel: 未安装 build)"; \
+	if $(PY) -c "import build" 2>/dev/null; then \
+		$(PY) -m build --sdist --wheel --outdir dist; \
+	else \
+		echo "跳过 sdist/wheel: 未安装 build (pip install build)"; \
+	fi; \
 	cd dist && sha256sum ./* > SHA256SUMS && cat SHA256SUMS
 
 clean:  ## 清理构建产物
