@@ -37,6 +37,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      - name: 工作流 YAML 门禁
+        # 工作流 YAML 解析失败时 GitHub 会"无 job 直接红", 日志里什么都看不到,
+        # 只能在这里拦 —— 值里带 ": " 忘记加引号就会踩(ci.yml 自己踩过)。
+        run: |
+          python -m pip install --quiet pyyaml
+          python -c "import glob, yaml; [yaml.safe_load(open(f, encoding='utf-8')) for f in glob.glob('.github/workflows/*.yml')]; print('workflows OK')"
       - name: 代码风格 (flake8, 配置见 setup.cfg)
         run: |
           python -m pip install --upgrade pip flake8
@@ -64,7 +70,9 @@ jobs:
         if: runner.os == 'Linux'
         run: bash tools/verify_install_sandbox.sh
 
-      - name: 运行时端到端 (独立进程: 真面板 + 真 SOCKS5)
+      # 引号不能省: 值里带 ": " 时 YAML 会把它当成第二个 key, 整个工作流解析失败
+      # (dc4aaba 起 CI 一直是"无 job 直接红"就是这个原因)。
+      - name: "运行时端到端 (独立进程: 真面板 + 真 SOCKS5)"
         run: python tests/test_runtime_e2e.py
 
       - name: 压测(与 bench/baseline.json 对比, 仅提示不阻断)
