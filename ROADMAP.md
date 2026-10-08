@@ -140,6 +140,77 @@
 
 ---
 
+## v0.1.1 已完成（Windows 实测收口，2026-10-08）
+
+主题：**"把 0.1.0 的 Windows 安装/打包在真实管理员会话里跑通，修掉实测才暴露的坑"**。
+本版本所有 Windows 相关改动均在 Windows 11 + 管理员权限下实测验证（含崩溃自愈与
+优雅停止），不是"跑通就行"，是真跑出来的问题。
+
+### 新增功能（Added）
+
+- [x] **Windows 依赖引导脚本** `tools/setup-windows-env.ps1`：用 winget 自动补齐
+  Python（指定版本）、OpenSSL，并建好 `.venv` + 安装 pyinstaller；幂等、带失败汇总。
+- [x] **PyInstaller 单文件 exe 打包** `tools/build-exe.py`：把 hublane 打成免 Python 的
+  `dist/hublane.exe`（此前不存在）。关键修复：onefile 下 `__file__` 指向每次运行都被
+  清空的 `_MEIPASS`，改为以 `sys.executable` 所在目录为数据根 + `seed_bundled()` 首次
+  播种内置 config/证书，证书/配置/状态/日志不再随临时目录消失。
+- [x] **管理员级实测工具** `tools/verify-windows.ps1`：提权后跑通"计划任务模式 +
+  服务模式"全流程，覆盖 `schtasks` 建任务、`sc create/start/stop`、崩溃自愈（强杀后
+  SCM 自动拉起）、优雅停止（端口释放 + 无残留进程），共 45 项断言、自带清理。
+- [x] **`.gitattributes`**：固定 `.sh`=LF / `.bat`·`.ps1`=CRLF，杜绝 Windows↔WSL 互相
+  把脚本存错换行符（曾导致 WSL 下 `bad interpreter: bash^M`）。
+- [x] **面板新增隧道维度**：纯 TCP 隧道（非托管域名 CONNECT / 明文 http / SSH）单独计
+  `隧道连接 / 隧道失败 / 隧道字节`，不再隐形于 HTTP 计数；每张卡片加 `title` 悬停说明口径。
+
+### 优化（Changed / Performance）
+
+- [x] **`tunnel()` 流量纳入统计**：此前 relay 之外的纯 TCP 隧道完全不计数，面板严重
+  低报。新增独立维度，且隧道耗时**不进延迟直方图**（隧道可能活数分钟，会带偏 P95）。
+- [x] **`main()` 复杂度收口**：抽 `_start_metrics()`，复杂度由 16 降到 ≤15，CI 的
+  flake8 C901 门禁由红转绿。
+- [x] **`_win_service()` 可测化**：约 81 行 ctypes 代码原为零覆盖，抽出不依赖 ctypes 的
+  `ServiceCore` 状态机（控制分发 / STOP_PENDING 上报 / 等待提示），通过可注入 backend 在
+  Linux CI 上单测（含 stop / shutdown / interrogate）。
+- [x] **字节计数自动换算**：新增 `_fmt_bytes()`，面板 `字节 / 隧道字节` 显示为 KB/MB。
+- [x] **flake8 全面转绿**：补 9 处 E306 空行 + 2 处续行缩进 + C901，CI 此前一直 fail。
+
+### 改 bug（Fixed）
+
+- [x] **CA 缺 `keyUsage` 导致 Python 3.14 握手失败**：`gen_certs()` 生成的 CA 只有
+  `Basic Constraints` 没有 `keyUsage`，违反 RFC 5280，OpenSSL 3.5 / Python 3.14 直接
+  拒绝（`CA cert does not include key usage extension`）。已在 `hublane.py` /
+  `install.sh` / `install-windows.bat` / `test_integration.py` 统一补 `-addext`，
+  首次运行 15 个测试挂掉的问题消除，现 148 → **165** 全绿（3.12/3.13 不受影响，一直埋着）。
+- [x] **`pip install hublane` 装不上**：`pyproject.toml` 同时写 `license="MIT"` 与
+  `License ::` 分类器，违反 PEP 639，被自身要求的 `setuptools>=77` 拒。删掉分类器。
+- [x] **`.bat` 在 cmd 下解析崩溃**：`echo` 行同时含中文与 ASCII 括号时，cmd 的 DBCS 解码
+  会把 `)` 吞掉、括号块失衡（`xxx was unexpected at this time.`）。`install-windows.bat`
+  的 `[4/6]` CA 块、两处安装脚本的错误提示块、卸载脚本的单行 `if/else` 都崩 —— 恰好是
+  用户最需要看提示时。全量改写（标签跳转 + 大扫除 14 处）。
+- [x] **`run-loop.bat` 写 `py` 而非绝对路径**：计划任务/Run 环境常无 `py`，静默陷入
+  3 秒死循环。改为解析绝对解释器路径（服务脚本本就对的，安装脚本漏了）。
+- [x] **服务模式留下"影子实例"**：`install-windows-service.bat` 的 `[3/6]` 用
+  `schtasks /end` 收不掉 `run-loop` 的子进程，而 `run-loop` 是 `goto loop` 死循环会重启；
+  Windows 的 `SO_REUSEADDR` 允许两个套接字绑同端口，于是服务与旧实例并存、请求被分走、
+  `sc stop` 后端口看似永不释放。改为按命令行杀整个进程树 + 按端口兜底。`uninstall-windows.bat`
+  同步修复。
+- [x] **指标面板（28898）从不显式关闭**：`main()` 返回到解释器退出之间端口仍占。补成对
+  关闭的 `_stop_metrics()`。
+- [x] **安装脚本 / 打包工具中文乱码**：`install-windows.bat`、`install-windows-service.bat`
+  加 `chcp 65001`；`build-exe.py` 对 stdout 做 `reconfigure(utf-8)`，重定向输出不再乱码。
+- [x] **面板计数口径歧义**：`fail` 数的是"单次上游尝试"，会大于 `requests`，原并列展示
+  易被误读成 bug。改为"上游成功 / 上游失败"并加悬停说明。
+
+### 文档（Documentation）
+
+- [x] **README × 2**：新增"排障"章节（Windows 实测确认的坑：schannel 吊销检查需
+  `--ssl-no-revoke`、CA 缺 keyUsage、`.bat` 括号解析、CRLF、run-loop 死循环等）。
+- [x] **`docs/TROUBLESHOOTING.md`**：新增第 9 章 Windows 专项（9a–9h）、第 10 章面板
+  计数口径；每条均 Windows 实测复现。
+- [x] 版本号同步到 `0.1.1`（`hublane.py` + `pyproject.toml`），`tools/check_version.py` 校验通过。
+
+---
+
 ## v0.2.0 —— 分发补齐与实现收口（计划中）
 
 主题：**"把承诺过但没兑现的项清干净，再让别人不用折腾就能装上"**。

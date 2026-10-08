@@ -69,10 +69,14 @@ def make_certs(directory):
                                                 "registry.npmjs.org"))
         fh.write("subjectAltName=%s,DNS:localhost,IP:127.0.0.1\n"
                  "basicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n" % extra)
+
     def run(*args):
         return subprocess.run([OPENSSL] + list(args), check=True, capture_output=True)
     run("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", ca_key,
-        "-out", ca_crt, "-days", "2", "-subj", "/O=hublane/CN=hublane test CA")
+        "-out", ca_crt, "-days", "2", "-subj", "/O=hublane/CN=hublane test CA",
+        # 与 hublane.py CA_ADDEXT 一致: 缺 keyUsage 会被 OpenSSL 3.5+ 拒绝
+        "-addext", "basicConstraints=critical,CA:TRUE",
+        "-addext", "keyUsage=critical,digitalSignature,keyCertSign,cRLSign")
     run("req", "-newkey", "rsa:2048", "-nodes", "-keyout", leaf_key, "-out", csr,
         "-subj", "/O=hublane/CN=hublane test leaf")
     run("x509", "-req", "-in", csr, "-CA", ca_crt, "-CAkey", ca_key,
@@ -386,8 +390,8 @@ class ProxyTestCase(unittest.TestCase):
 
     def http_get(self, path, port=None, headers=()):
         """直连明文端口(指标端点), 返回 (状态码, 头, 体)"""
-        raw = socket.create_connection(("127.0.0.1", port or self.metrics_port),
-                                      timeout=8)
+        addr = ("127.0.0.1", port or self.metrics_port)
+        raw = socket.create_connection(addr, timeout=8)
         try:
             lines = ["GET %s HTTP/1.1" % path, "Host: 127.0.0.1"]
             lines += ["%s: %s" % kv for kv in headers]

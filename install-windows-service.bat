@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
 title hublane 服务模式安装 (需管理员)
 
@@ -13,12 +14,14 @@ REM ============================================================
 set "DEST=%LOCALAPPDATA%\hublane"
 set "SVC=hublane"
 set "PORT=8899"
+REM 让内嵌 Python 用 UTF-8 读写, 否则中文输出在 cmd 里是乱码
+set "PYTHONUTF8=1"
 
 REM ---------- 0. 管理员检查 ----------
 net session >nul 2>&1
 if errorlevel 1 (
   echo [错误] 需要管理员权限: 请右键"以管理员身份运行"本脚本。
-  echo        原因: 注册系统服务(sc create)必须提升权限。
+  echo        原因: 注册系统服务 sc create 必须提升权限。
   exit /b 1
 )
 
@@ -34,7 +37,7 @@ if not exist "%DEST%\hublane.py" (
   exit /b 1
 )
 if not exist "%DEST%\server.crt" (
-  echo [错误] 未找到 %DEST%\server.crt (证书缺失)
+  echo [错误] 未找到 %DEST%\server.crt 证书缺失
   echo        请先运行 install-windows.bat。
   exit /b 1
 )
@@ -54,11 +57,21 @@ if not exist "%PYW%" set "PYW=%PYEXE%"
 echo [2/6] Python: %PYW%
 
 REM ---------- 3. 移除登录自启(避免与服务重复) ----------
-echo [3/6] 移除计划任务 / Run 项 (改为服务自启)
+echo [3/6] 移除计划任务 / Run 项, 改为服务自启
 schtasks /end    /tn %SVC% >nul 2>&1
 schtasks /delete /tn %SVC% /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v %SVC% /f >nul 2>&1
 reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" /v %SVC% /f >nul 2>&1
+REM schtasks /end 只结束任务本身, run-loop.bat 拉起的 python.exe 是它的子进程。
+REM 关键: run-loop.bat 是个 goto loop 死循环 —— 只杀 python.exe 没用, 监管它的
+REM cmd.exe 会在 3 秒后把 python.exe 再拉起来。所以先按命令行杀掉整个 run-loop
+REM 进程树, 再按端口兜底。漏掉这一步的后果: Windows 上 SO_REUSEADDR 允许两个
+REM 套接字绑同一端口, 服务与"影子实例"并存, 请求被两个进程分走, sc stop 之后
+REM 端口看起来一直"没释放"。
+powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run-loop*' -or $_.CommandLine -like '*hublane.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8899" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
+for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":28898" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
+timeout /t 2 >nul
 
 REM ---------- 4. 创建服务 ----------
 echo [4/6] 创建服务 %SVC%
@@ -81,7 +94,7 @@ if errorlevel 1 (
 sc description %SVC% "hublane: 本地中继代理, 让 GitHub 在受限网络下可达(HTTP+SOCKS5 127.0.0.1:%PORT%)" >nul 2>&1
 
 REM ---------- 5. 崩溃自愈 ----------
-echo [5/6] 配置崩溃自动重启 (sc failure)
+echo [5/6] 配置崩溃自动重启, sc failure
 sc failure %SVC% reset= 86400 actions= restart/3000/restart/3000/restart/3000 >nul 2>&1
 
 REM ---------- 6. 启动 ----------
@@ -101,9 +114,9 @@ if errorlevel 1 (
 
 echo.
 echo ============================================
-echo   完成(服务模式: 开机自启, 注销后仍运行)
+echo   完成 - 服务模式: 开机自启, 注销后仍运行
 echo     状态  : sc query %SVC%     ^|  net stop %SVC%
-echo     代理  : 127.0.0.1:%PORT%  (HTTP + SOCKS5)
+echo     代理  : 127.0.0.1:%PORT%  HTTP + SOCKS5
 echo     面板  : http://127.0.0.1:28898/
 echo     日志  : %DEST%\hublane.log
 echo     卸载  : 以管理员身份运行 uninstall-windows-service.bat

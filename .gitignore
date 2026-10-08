@@ -8,6 +8,17 @@ state.json
 hublane.log
 bench/baseline.json
 
+# ---- Windows 验证工具链 (tools/setup-windows-env.ps1, tools/build-exe.py) ----
+.venv/
+venv/
+build/
+dist/
+*.spec
+hublane.egg-info/
+.coverage
+.coverage.*
+htmlcov/
+
 # ---- Private keys & generated certificates: NEVER commit ----
 # Certificates are generated locally at install time (see install.sh /
 # install-windows.bat). They must not be tracked by git.

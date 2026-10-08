@@ -189,7 +189,14 @@ curl -X POST http://127.0.0.1:28898/reload   # hot-reload config (POSIX: kill -H
 sudo journalctl -u hublane -f        # logs (WSL)
 python hublane.py --check            # config validation
 python hublane.py --renew-certs      # renew the leaf cert (keeps the CA); --renew-ca renews both
-python -m unittest discover -s tests # unit + integration tests (148 cases, no internet needed)
+python -m unittest discover -s tests # unit + integration tests (165 cases, no internet needed)
+
+# Windows only: build a standalone hublane.exe (no Python needed on the target)
+pwsh -File tools/setup-windows-env.ps1    # winget: Python + OpenSSL, creates .venv
+python tools/build-exe.py                 # -> dist/hublane.exe (--one-dir lowers AV false positives)
+
+# Windows admin-grade end-to-end check (task mode + service mode, self-cleaning)
+pwsh -Command "Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File','tools\verify-windows.ps1' -Wait"
 ```
 
 The panel, JSON, PAC, samples, diag bundle and reload all accept `metrics_token`
@@ -306,6 +313,34 @@ CSS still references the blocked gstatic host.
   background probing — their health comes from real traffic only, while raw mirrors
   are probed every 120 s.
 - Troubleshooting: [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
+
+## Troubleshooting
+
+Full manual with numbered cases: [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
+
+**Windows gotchas confirmed during Windows verification** — every row below was
+reproduced on Windows 11, not guessed:
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| `curl: (60) schannel: the revocation status is unknown` | Windows schannel performs an OCSP revocation check; a locally generated CA has no responder | add `--ssl-no-revoke`, and pass `--cacert %LOCALAPPDATA%\hublane\ca.crt` |
+| `SSL: CA cert does not include key usage extension` | Python 3.14 / OpenSSL 3.5 rejects a CA cert without the `keyUsage` extension | `python hublane.py --renew-ca`, then reinstall trust in the root store |
+| A `.bat` prints `xxx was unexpected at this time.` | inside an `if (...)` block, an `echo` line mixing non-ASCII text with ASCII `()` breaks cmd's block parser | keep `.bat` files UTF-8, and avoid parentheses in `echo` text |
+| `./install.sh: bad interpreter: /usr/bin/env bash^M` (WSL) | the shell script was checked out with CRLF | a `.gitattributes` pins `.sh` to LF and `.bat` to CRLF; re-clone if you have an old checkout |
+| Proxy dies a few seconds after logon, nothing in the log | the generated `run-loop.bat` called `py`, which is not on the scheduled task's PATH | fixed — re-run `install-windows.bat`; the absolute interpreter path is now baked in |
+| `ERROR: Input redirection is not supported` | `wscript.exe` launched with redirected stdin (CI, agents, SSH) | harmless artifact of non-interactive sessions |
+| Process lingers a few seconds after `sc stop` | `concurrent.futures`' atexit hook joins its thread pool, waiting for in-flight DoH requests | by design: the SCM wait hint is 30 s, measured exit is ~10–15 s |
+| Switching from task mode to service mode: an unknown `python.exe` holds the port | `run-loop.bat` is a `goto loop` loop, so the old supervisor relaunches python | step `[3/6]` now kills the whole process tree by command line; reinstall once |
+| `openssl` not found | Windows ships no system OpenSSL; only Git for Windows bundles one | `pwsh -File tools/setup-windows-env.ps1` installs it via winget |
+
+**Reading the panel counters.** `HTTP requests` counts only requests that hublane
+decrypted (MITM). Pure TCP tunnels — non-managed domains, plain `http://`, SSH — are
+counted separately as `Tunnel connections` / `Tunnel failures` / `Tunnel bytes`, so
+total traffic is visible without corrupting the HTTP numbers. `Upstream failures`
+counts *per upstream attempt*: one request that tries three upstreams adds three, so
+it can legitimately exceed the request count. Tunnel durations are deliberately kept
+out of the latency percentiles, since a tunnel may live for minutes and would skew
+P50/P95. Hover any card for its exact definition.
 
 ## Legal & responsible use
 

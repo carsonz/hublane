@@ -14,6 +14,43 @@
 
 ---
 
+## [0.1.1] - 2026-10-08
+
+本版本把 0.1.0 的 Windows 安装与打包在真实管理员会话里跑通，修掉实测才暴露的坑；
+所有 Windows 改动均经 Windows 11 + 管理员实测（含崩溃自愈与优雅停止）。
+
+### Added
+
+- Windows 依赖引导脚本 `tools/setup-windows-env.ps1`（winget 装 Python + OpenSSL + .venv）
+- PyInstaller 单文件 exe 打包 `tools/build-exe.py`（免 Python 的 `dist/hublane.exe`）
+- 管理员级全流程实测工具 `tools/verify-windows.ps1`（45 项断言：计划任务 + 服务模式 +
+  崩溃自愈 + 优雅停止，自带清理）
+- `.gitattributes` 固定 `.sh`=LF / `.bat`·`.ps1`=CRLF
+- 面板新增隧道维度（隧道连接 / 隧道失败 / 隧道字节）与计数口径悬停提示
+- README×2 排障章节 + `docs/TROUBLESHOOTING.md` 第 9 章（Windows 专项）、第 10 章（计数口径）
+
+### Changed
+
+- `tunnel()` 流量纳入独立统计维度，隧道耗时不计入延迟直方图（避免带偏 P95）
+- 抽出 `_start_metrics()`，`main()` 复杂度由 16 降到 ≤15（修复 flake8 C901 门禁）
+- `_win_service()` 抽出可测的 `ServiceCore` 状态机，补 Windows 服务单测
+- 字节计数自动换算 KB/MB（`_fmt_bytes`）
+
+### Fixed
+
+- CA 证书缺 `keyUsage` 导致 Python 3.14 / OpenSSL 3.5 拒绝握手（统一补 `-addext`）
+- `pip install hublane` 因 PEP 639 冲突（`license` 与分类器并存）装不上
+- `.bat` 中文 + ASCII 括号导致 cmd 解析崩溃（改写为标签跳转，大扫除 14 处）
+- `run-loop.bat` 写 `py` 而非绝对路径，计划任务下静默死循环
+- 服务模式留下"影子实例"：`[3/6]` 用 `schtasks /end` 收不掉 `run-loop` 子进程
+- 指标面板（28898）从不显式关闭；安装脚本与打包工具中文乱码（`chcp 65001` / stdout utf-8）
+- 面板计数 `fail` 语义歧义改为"上游成功 / 上游失败"并加悬停说明
+
+### Documentation
+
+- README×2 排障章节、TROUBLESHOOTING Windows 专项与计数口径
+- 版本号同步到 `0.1.1`（`hublane.py` + `pyproject.toml`），`tools/check_version.py` 校验通过
+
 ## [Unreleased]
 
 （暂无）

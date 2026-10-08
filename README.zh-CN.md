@@ -179,7 +179,14 @@ curl -X POST http://127.0.0.1:28898/reload   # 热重载配置（POSIX 也可 ki
 sudo journalctl -u hublane -f        # 日志（WSL）
 python hublane.py --check            # 配置校验
 python hublane.py --renew-certs      # 续期叶证书(保留 CA); --renew-ca 连 CA 一起换
-python -m unittest discover -s tests # 单元 + 集成测试（148 项，集成测试不需要外网）
+python -m unittest discover -s tests # 单元 + 集成测试（165 项，集成测试不需要外网）
+
+# 仅 Windows：打包成免 Python 的独立 exe
+pwsh -File tools/setup-windows-env.ps1    # winget 装 Python + OpenSSL，并建 .venv
+python tools/build-exe.py                 # -> dist/hublane.exe（--one-dir 可降低杀软误报）
+
+# Windows 管理员级实测（计划任务模式 + 服务模式全流程，自动清理）
+pwsh -Command "Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-File','tools\verify-windows.ps1' -Wait"
 ```
 
 面板/JSON/PAC/样本/诊断包/重载都受 `metrics_token` 保护（请求头 `X-Hublane-Token: <token>`
@@ -294,6 +301,30 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 - `raw` 之外的链（`github_upstreams` / `extra_upstreams`）没有后台主动探测，
   健康度只来自真实流量；raw 镜像则每 120 秒主动探测一轮。
 - 排障手册见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
+
+## 排障
+
+完整手册（编号案例）见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
+
+**Windows 实测确认的坑** —— 下面每一条都在 Windows 上真实复现过，不是推测：
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `curl: (60) schannel: the revocation status is unknown` | Windows schannel 会做 OCSP 吊销检查，而本地自签 CA 没有吊销响应者 | 加 `--ssl-no-revoke`，并用 `--cacert %LOCALAPPDATA%\hublane\ca.crt` |
+| `SSL: CA cert does not include key usage extension` | Python 3.14 / OpenSSL 3.5 拒绝缺少 `keyUsage` 扩展的 CA | `python hublane.py --renew-ca` 后重新安装信任 |
+| `.bat` 打印 `xxx was unexpected at this time.` | 在 `if (...)` 块里，`echo` 行同时含非 ASCII 文字和 ASCII 括号会破坏 cmd 的块解析 | `.bat` 保持 UTF-8，并避免在 `echo` 文本里写 `(...)` |
+| WSL 下 `./install.sh: bad interpreter: /usr/bin/env bash^M` | 脚本被以 CRLF 检出 | 仓库已带 `.gitattributes` 固定 `.sh` 为 LF、`.bat` 为 CRLF；旧检出请重新 clone |
+| 登录后代理几秒就没了，日志还是空的 | 生成的 `run-loop.bat` 调的是 `py`，而计划任务环境里没有它 | 已修复，重跑 `install-windows.bat` 即可，现在写入绝对解释器路径 |
+| `ERROR: Input redirection is not supported` | `wscript.exe` 在 stdin 被重定向时启动（CI / agent / SSH） | 无害，仅出现在非交互会话里 |
+| `sc stop` 后进程要过几秒才消失 | `concurrent.futures` 的 atexit 钩子要 join 线程池，等途中 DoH 请求返回 | 设计内：给 SCM 的等待提示就是 30 秒，实测约 10~15 秒 |
+| 从计划任务模式换服务模式后，端口被一个不明 `python.exe` 占着 | `run-loop.bat` 是 `goto loop` 死循环，旧实例的监管进程会把 python 重新拉起 | 已在 `[3/6]` 按命令行收掉整个进程树，重装一次即可 |
+| 找不到 `openssl` | Windows 不自带 OpenSSL，只有 Git for Windows 附带一份 | `pwsh -File tools/setup-windows-env.ps1` 会用 winget 装好 |
+
+**怎么看面板计数**：`HTTP 请求` 只统计被 hublane 解密（MITM）过的请求。纯 TCP 隧道
+（非托管域名、明文 `http://`、SSH）单独统计为 `隧道连接` / `隧道失败` / `隧道字节`，
+这样总流量可见，又不会污染 HTTP 口径。`上游失败` 数的是**单次上游尝试**：一个请求
+依次试三个上游就加三，所以它可能大于请求数，这不是 bug。隧道耗时**故意不计入延迟
+分位数** —— 隧道可能存活数分钟，混进去会把 P50/P95 带偏。鼠标悬停任意卡片可看精确口径。
 
 ## 法律与合规使用
 
