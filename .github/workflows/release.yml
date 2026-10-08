@@ -56,9 +56,11 @@ jobs:
           ls -l dist
 
       - name: 生成校验值 (SHA256SUMS)
+        # 只校验文件, 跳过目录(上一步 cp -r 会把 tools/docs/bench 拷进 dist/,
+        # 若用 sha256sum ./* 会对目录报错并令整个 job 退出码 1, 导致 Release 建不出来)
         run: |
           cd dist
-          sha256sum ./* > SHA256SUMS
+          find . -type f -exec sha256sum {} + > SHA256SUMS
           cat SHA256SUMS
 
       - name: 发布来源证明 (provenance)
@@ -79,5 +81,16 @@ jobs:
           name: hublane ${{ github.event.inputs.tag || github.ref_name }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
+          # 显式列出文件, 不要把 tools/docs/bench 等目录当附件(Release 不能挂目录)
           files: |
-            dist/*
+            dist/hublane-*.tar.gz
+            dist/*.whl
+            dist/hublane.py
+            dist/config.json
+            dist/install.sh
+            dist/uninstall.sh
+            dist/install-windows.bat
+            dist/uninstall-windows.bat
+            dist/install-windows-service.bat
+            dist/uninstall-windows-service.bat
+            dist/SHA256SUMS
