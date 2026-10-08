@@ -361,11 +361,19 @@ ps1 缺 BOM / timeout 落空），全部修复。
     在真服务（SYSTEM，pid 存活）运行中也可写。结论：**替换可行，
     但运行中的进程仍是旧代码，必须重启服务才生效**；`--update` 成功消息
     已补充该提示。替换后 `--check` 失败的回滚路径仍由单测覆盖。
-- [ ] **5. Gitee 同步工作流的一次真实 tag 验证**
-  - `.github/workflows/gitee-sync.yml` 已复核并加固（release id 取不到时
-    显式失败并提示排查镜像同步，避免"绿了但没附件"的假成功）；
-    仍需打一个真实 tag 走一遍：GitHub Release 附件 → Gitee 同名 Release。
-    注意打 tag 会先过 release.yml 的 flake8 + 测试门禁（现已恢复绿）。
+- [x] **5. Gitee 同步工作流的一次真实 tag 验证**（走到最后一步，卡在 Gitee 凭据）
+  - v0.2.0 已打真实 tag：Release 工作流全绿（版本门禁 / 测试门禁 / 打包 / provenance /
+    Release 说明 / 发布资产），附件齐全。
+  - 真实 dispatch 了两次 Gitee Sync，前四步都过：确定 tag、检出、推 git 镜像、
+    从 GitHub 下载 Release 附件；Gitee 仓库里 v0.2.0 tag 已在位。
+  - 卡点：`POST /releases` 建 Gitee Release 返回空体，随后
+    `GET /releases/tags/v0.2.0` 返回 `null`，Gitee 侧仍是 0 个 release。
+    git 推送用同一个 token 是成功的，所以**最可能是 GITEE_TOKEN 对 API 写操作
+    无效**（权限/过期/含空白字符），需要重新生成 Gitee 私人令牌后复跑。
+  - 顺带修掉三个"静默失败"：① Release 由 GITHUB_TOKEN 创建不会触发
+    `release:published`（GitHub 规则），已改为建完显式 `gh workflow run`；
+    ② 取 release id 时 `bash -e` 一抛异常就整步中断、日志里什么都没有，
+    已改为容错解析并把 Gitee 返回体打到日志；③ 拿不到 id 直接失败而不是假成功。
 
 ---
 
