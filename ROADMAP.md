@@ -361,19 +361,21 @@ ps1 缺 BOM / timeout 落空），全部修复。
     在真服务（SYSTEM，pid 存活）运行中也可写。结论：**替换可行，
     但运行中的进程仍是旧代码，必须重启服务才生效**；`--update` 成功消息
     已补充该提示。替换后 `--check` 失败的回滚路径仍由单测覆盖。
-- [x] **5. Gitee 同步工作流的一次真实 tag 验证**（走到最后一步，卡在 Gitee 凭据）
+- [x] **5. Gitee 同步工作流的一次真实 tag 验证**（已打通，附件同步成功）
   - v0.2.0 已打真实 tag：Release 工作流全绿（版本门禁 / 测试门禁 / 打包 / provenance /
     Release 说明 / 发布资产），附件齐全。
-  - 真实 dispatch 了两次 Gitee Sync，前四步都过：确定 tag、检出、推 git 镜像、
-    从 GitHub 下载 Release 附件；Gitee 仓库里 v0.2.0 tag 已在位。
-  - 卡点：`POST /releases` 建 Gitee Release 返回空体，随后
-    `GET /releases/tags/v0.2.0` 返回 `null`，Gitee 侧仍是 0 个 release。
-    git 推送用同一个 token 是成功的，所以**最可能是 GITEE_TOKEN 对 API 写操作
-    无效**（权限/过期/含空白字符），需要重新生成 Gitee 私人令牌后复跑。
-  - 顺带修掉三个"静默失败"：① Release 由 GITHUB_TOKEN 创建不会触发
-    `release:published`（GitHub 规则），已改为建完显式 `gh workflow run`；
-    ② 取 release id 时 `bash -e` 一抛异常就整步中断、日志里什么都没有，
-    已改为容错解析并把 Gitee 返回体打到日志；③ 拿不到 id 直接失败而不是假成功。
+  - 真实 dispatch 4 次，最终在 Gitee 上**成功建出 v0.2.0 release 并同步全部 7 个附件**
+    （含 GitHub 自动生成的源码包 v0.2.0.zip / v0.2.0.tar.gz）。
+  - 挖出并修掉两个真 bug（都不是"分支缺失"——Gitee 本来就有 main 分支）：
+    ① `git push gitee --mirror` 在 detached HEAD 下会去删 Gitee 的 main 分支
+    （`remote: refusing to delete the current branch`），已被拒 → push 失败；
+    改成只推 `HEAD:refs/heads/main` + `--tags`，绝不删分支。
+    ② 建 release 的 `POST /releases` 没显式传 `target_commitish`，Gitee 默认分支
+    解析失败返回空体（GET 回 `null`）；补上 `target_commitish: "main"` 后 POST 才成功。
+  - 顺带修掉"静默失败"：Release 由 GITHUB_TOKEN 创建不会触发 `release:published`
+    （GitHub 规则），已改为建完显式 `gh workflow run`；取 release id 时 `bash -e`
+    一抛异常就整步中断，已改为容错解析 + 把 Gitee 返回体/HTTP 状态码打到日志；
+    拿不到 id 直接失败而不是假成功。
 
 ---
 
