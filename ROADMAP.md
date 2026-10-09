@@ -238,8 +238,7 @@
     导致证书每次重生成；`openssl req -addext` 在冻结产物里 SIGSEGV。
     打包脚本 `tools/build_exe.sh --smoke` 已能在 Linux 上跑通"打包 → 生成证书 →
     校验证书链"全流程。
-  - 剩余前置：需在干净 Windows 上手工跑通 —— 体积/杀软误报、证书生成对
-    `openssl.exe` 的依赖（用户没装 Git 时的兜底）、`--service` 打包后是否可用。
+  - 剩余前置：已在 Windows 11 实机跑通（见下方"需 Windows 平台验证"第 1 条）。
   - 若跑通：CI 增加 Windows exe 产物，**P4 Rust/Go 移植正式关闭**（见"明确不做"）。
 
 - [ ] **3. 分发渠道与可信标识**
@@ -316,6 +315,68 @@
 - [x] **13. 上游健康度表列头可点击排序**
   - 面板「上游健康度」表列名可点击切换升序 / 降序（延迟 / 成功率 / 最近样本等）。
   - 验收：前端排序逻辑单测（或至少手动验证三种排序）。
+## 需 Windows 平台验证（单独挑出）
+
+以下几项**逻辑已在 Linux 侧实现并有单测覆盖，但必须在真实 Windows 上跑过才算完成** ——
+Linux 无法替代验证。验证条件：Windows 11 + 管理员会话。
+**2026-10-09 已在 Windows 11 实机（非管理员会话）完成大部分验证**，
+实测发现的问题见 `CHANGELOG.md` 0.2.0 的 Fixed 段（面板 JS 语法错误 / 表头被排序挪走 /
+ps1 缺 BOM / timeout 落空），全部修复。
+
+- [x] **1. 第 2 条：Windows 免 Python 单文件 exe**（管理员项除外，见下）
+  - 实测（Python 3.14 + PyInstaller 6.22）：`tools/build-exe.py` 产出
+    `dist/hublane.exe` **9.4 MB**；Defender 自定义扫描无检出（SmartScreen 对未签名
+    新 exe 的拦截无法离线模拟，发布后仍需观察）；干净目录首次运行自动播种
+    config + 证书，`--check` 通过；`--renew-certs` 在冻结产物里正常（不再复现
+    Linux 上的 SIGSEGV）；`--service` 不经 SCM 启动时给出正确提示，证明
+    SCM 分发器在冻结形态可用。
+  - openssl 兜底：exe 内置构建期证书，首次运行**不需要** openssl；
+    无 Git / 无 OpenSSL 时 `find_openssl()` 返回 None、`gen_certs()` 明确报
+    "未找到 openssl"（已实测），不静默失败。
+  - [ ] 剩余：管理员会话跑 `tools/verify-windows.ps1` 把 exe 注册成服务做
+    `sc create/start/stop` 与崩溃自愈全流程。
+- [x] **2. Windows 安装脚本缺的两项能力**
+  - `install-windows.bat` / `install-windows-service.bat` 已补
+    `--renew-certs` / `--renew-ca` 透传（服务脚本在续期后重装信任）与
+    Firefox `policies.json`（新脚本 `tools/setup-firefox-policy.ps1`，写入
+    `%ProgramFiles%\Mozilla Firefox\distribution\policies.json`，合并已有策略、
+    无 Firefox 自动跳过、缺管理员权限时明确提示）。
+  - 实测：干跑装置（系统命令换成 exe 桩、`LOCALAPPDATA` 指向沙箱）跑通全部
+    7 步 + `[2.5/7]` 续期两档 + 完成横幅，cmd 下中文解析正常；本机未装 Firefox，
+    验证了正确跳过分支；`--help` 在非管理员会话可用。真实写 Program Files / certutil
+    的分支需管理员会话复核。
+  - 注：原先担心的"中文 + ASCII 括号破坏块解析"实际根因是**编码**——中文 Windows
+    默认 OEM 是 CP936，无 BOM 的 UTF-8 `.bat` 被当 GBK 解码、中文变乱码把结构打碎，
+    报一堆"不是内部或外部命令"；试加 UTF-8 BOM 反而弄坏 `@echo off`（cmd 不识 BOM）。
+    已统一改为 **GBK(CP936) 无 BOM 编码 + `chcp 936`**，并加测试断言防退化。
+- [x] **3. 面板三项 + 暂停/恢复的浏览器实测**
+  - Edge（Chromium）无头渲染 + CDP 驱动点击，8 项断言全过：无 JS 错误、
+    列头排序升/降序且表头不动、URL 工具生成 curl/git clone、暂停后
+    `/status.paused=true` 且出现"恢复"、恢复后 `false`、立即刷新可提交。
+    Chrome 未在本机安装（与 Edge 同引擎），如需严格验证可在装有 Chrome 的
+    机器上重复。实测暴露并修复了两个渲染层 bug（见 CHANGELOG）。
+- [x] **4. `--update` 在 Windows 服务模式下的替换**
+  - 实测：Python 启动后不持有 `hublane.py` 的句柄 —— 常驻进程运行中
+    覆盖 / 删除 / move-over 替换全部成功，`%LOCALAPPDATA%\hublane\hublane.py`
+    在真服务（SYSTEM，pid 存活）运行中也可写。结论：**替换可行，
+    但运行中的进程仍是旧代码，必须重启服务才生效**；`--update` 成功消息
+    已补充该提示。替换后 `--check` 失败的回滚路径仍由单测覆盖。
+- [x] **5. Gitee 同步工作流的一次真实 tag 验证**（已打通，附件同步成功）
+  - v0.2.0 已打真实 tag：Release 工作流全绿（版本门禁 / 测试门禁 / 打包 / provenance /
+    Release 说明 / 发布资产），附件齐全。
+  - 真实 dispatch 4 次，最终在 Gitee 上**成功建出 v0.2.0 release 并同步全部 7 个附件**
+    （含 GitHub 自动生成的源码包 v0.2.0.zip / v0.2.0.tar.gz）。
+  - 挖出并修掉两个真 bug（都不是"分支缺失"——Gitee 本来就有 main 分支）：
+    ① `git push gitee --mirror` 在 detached HEAD 下会去删 Gitee 的 main 分支
+    （`remote: refusing to delete the current branch`），已被拒 → push 失败；
+    改成只推 `HEAD:refs/heads/main` + `--tags`，绝不删分支。
+    ② 建 release 的 `POST /releases` 没显式传 `target_commitish`，Gitee 默认分支
+    解析失败返回空体（GET 回 `null`）；补上 `target_commitish: "main"` 后 POST 才成功。
+  - 顺带修掉"静默失败"：Release 由 GITHUB_TOKEN 创建不会触发 `release:published`
+    （GitHub 规则），已改为建完显式 `gh workflow run`；取 release id 时 `bash -e`
+    一抛异常就整步中断，已改为容错解析 + 把 Gitee 返回体/HTTP 状态码打到日志；
+    拿不到 id 直接失败而不是假成功。
+
 ---
 
 ## v0.2.1 —— P0 缺陷修复（补丁版，最高优先）
@@ -430,6 +491,7 @@ minor 会让 0.2.0 的用户一直踩。
   - 把排障手册里的判据自动化：本机是否能直连、CA 是否装好、端口是否被占、
     DoH 是否可用、上游链是否至少有一个能通、代理变量是否生效。
   - 价值：把"用户看不出为什么没效果"变成一条命令给出结论，直接降低 issue 量。
+
 
 ---
 

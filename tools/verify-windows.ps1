@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     hublane Windows 管理员级实测: 计划任务模式 + 服务模式全流程验证。
 

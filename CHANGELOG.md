@@ -2,6 +2,16 @@
 
 本文件记录 hublane 的每个发布版本，格式基于 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [Unreleased]
+
+### Fixed
+
+- **`uninstall-windows-service.bat` 误报"服务仍在"**：原脚本用 `sc delete` 的
+  报错来判定服务是否存在，但服务**已删除**时 `sc delete` 返回 1060(不存在) 也被当成
+  "仍在"，每次卸载都误报警告；且服务进程未退出时 `sc delete` 只"标记删除"、条目不消失，
+  脚本也没杀进程。改为：先按 `sc queryex` 拿到的 PID 杀掉服务进程，再用 `sc query`
+  的存在性（而非 `sc delete` 的报错）来判定——不存在则提示"服务已删除(或本就不存在)"。
+
 **格式约定**
 
 - `## [版本号] - YYYY-MM-DD` —— 一个发布版本的段落，日期为该版本的发布日期；
@@ -21,6 +31,11 @@
 
 ## [0.2.0] - 2026-10-09
 
+本版本 Windows 侧改动已在 Windows 11 实机验证：exe 打包冒烟（体积 9.4 MB、
+Defender 无检出、`--service` 能进 SCM 分发器、`--renew-certs` 在冻结产物里可用、
+干净目录首次运行自动播种证书）、安装脚本干跑（全流程 + 续期透传 + 无 Firefox 跳过）、
+面板四项交互在 Edge 上点击验证。`sc create` 注册服务与真实打 tag 仍待管理员会话执行。
+
 ### Added
 
 - **安装时自动修好 GitHub 的 SSH 入口**：检测到 `github.com` 被劫持或 22 端口不通时，
@@ -34,7 +49,9 @@
 - **面板：立即刷新与暂停**，刷新不等后台周期；暂停后所有域名走纯 TCP 隧道直通，可随时恢复。
 - **面板：健康度表列头可点击排序**。
 - **`GET /hosts`**：以 hosts 格式导出已验真 IP。
-- **`--check-update` / `--update`**：前者只提示，后者拉取新版并在校验失败时整体回滚。
+- **`--check-update` / `--update`**：前者只提示，后者拉取新版并在校验失败时整体回滚；
+  Windows 上更新成功后会提示"运行中的实例需重启服务才生效"
+  （实测：Python 启动后不持有 `hublane.py` 句柄，替换总能成功，但进程内仍是旧代码）。
 - **Gitee 镜像同步 Release 附件**。
 - **接入 OpenSSF Scorecard**。
 
@@ -42,12 +59,44 @@
 
 - **`enable_socks5` 真正生效**：置 `false` 后该端口只服务 HTTP。
 - **`verbose` 接上，默认值改为 `false`**。
-- **安装脚本透传 `--renew-certs` / `--renew-ca`**，证书续期不必再手敲命令。
+- **安装脚本透传 `--renew-certs` / `--renew-ca`**，证书续期不必再手敲命令；
+  Windows 侧（`install-windows.bat` / `install-windows-service.bat`）同步支持。
+- **Windows 安装脚本自动写 Firefox 企业策略**（`tools/setup-firefox-policy.ps1`，
+  `Certificates.Install` + `ImportEnterpriseRoots`），Firefox 不再需要手动导入 CA；
+  未装 Firefox 时自动跳过。绿色压缩包里补带这两个 ps1，避免"脚本存在但包里没有"。
+- **面板 5 秒自动刷新改为 JS 定时**：URL 工具输入框有内容时跳过本轮刷新，
+  不再把贴进去的 URL 和生成结果每 5 秒清空一次；无输入时刷新行为不变。
+- **面板按钮提交后回到面板**：立即刷新 / 暂停 / 恢复 / 重载配置原先会把浏览器
+  晾在一段裸 JSON 上，现在浏览器表单提交走 303 回面板（脚本 / curl 仍拿 JSON）。
 - **PAC 覆盖 `per_host_upstreams` 里的精确域名**，浏览器不再绕过这些规则。
 
 ### Fixed
 
 - **`/diag` 会泄露 `metrics_token`**：日志里的 `token=` 现在写盘之前就打码。
+- **面板 URL 工具在浏览器里完全不工作**：模板字符串里的 `\n` 被 Python 先行转义
+  成真实换行，写进页面的 JS 字符串字面量断裂成语法错误，整段 `<script>` 被
+  浏览器丢弃 —— 排序初始化随之失效，点"生成命令"永远停在占位文案。单元测试
+  只覆盖了服务端变换逻辑，渲染层问题只能靠真浏览器暴露（Chrome/Edge 实测复现）。
+- **面板排序会把表头行挪走**：表格没有 `<thead>`，表头行本身在 tbody 里，
+  第一次点击排序表头就被当成数据行排到别处；排序前先筛掉含 `th` 的行。
+- **PowerShell 脚本缺 UTF-8 BOM**：Windows PowerShell 5.1 对无 BOM 脚本按 ANSI
+  解码，中文双字节序列可能"造出"`{` 或引号使整段脚本语法错误
+  （`tools/setup-git-ssh.ps1` 0.1.1 已修过一次；新写的 `setup-firefox-policy.ps1`
+  实测再次踩中，已给全部含中文的 ps1 补 BOM 并加静态断言防回归）。
+- **安装脚本里的 `timeout` 等待会落空**：stdin 不是控制台时（脚本调脚本、
+  输出被重定向）`timeout` 直接报 `Input redirection is not supported` 退出，
+  改用 `ping -n` 兜底。
+- **Windows 批处理（`.bat`）中文编码导致整段被当命令执行**：中文 Windows 默认
+  OEM 是 CP936，cmd 把**无 BOM 的 UTF-8 `.bat`** 当 GBK 解码，中文变乱码，乱码字节
+  里混进 `)` / `&` 把结构打碎，报一堆"不是内部或外部命令"（`install/uninstall` 的
+  service bat 实测炸过）。试过加 UTF-8 BOM，但 **cmd 不识别 BOM**，会把 `EF BB BF`
+  当成首行内容弄坏 `@echo off`（`锘匡豢@echo` 不是内部命令）。最终改成 **GBK(CP936)
+  无 BOM 编码** + 脚本内 `chcp 936`（而非 65001），与系统解码一致，中文 Windows 原生
+  读对；`tests/test_hublane.py` 新增断言 `.bat` 必须为 GBK 无 BOM、且不得用 65001，
+  防回归。
+- **发布门禁 flake8 复红**（`handle_client` / `main` 圈复杂度 16、测试文件
+  4 处 E306），打 tag 会被 CI 拦住；分别抽出 `_parse_connect_target` /
+  `_handle_connect` / `_run_cli_command` 后恢复 ≤15。
 
 ### Documentation
 

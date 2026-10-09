@@ -1,46 +1,60 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 setlocal
-title hublane æœåŠ¡æ¨¡å¼å¸è½½ (éœ€ç®¡ç†å‘˜)
+title hublane ·þÎñÄ£Ê½Ð¶ÔØ (Ðè¹ÜÀíÔ±)
 
 set "DEST=%LOCALAPPDATA%\hublane"
 set "SVC=hublane"
 
 echo ============================================
-echo   hublane æœåŠ¡æ¨¡å¼å¸è½½
+echo   hublane ·þÎñÄ£Ê½Ð¶ÔØ
 echo ============================================
 echo.
 
 net session >nul 2>&1
 if errorlevel 1 (
-  echo [é”™è¯¯] éœ€è¦ç®¡ç†å‘˜æƒé™: è¯·å³é”®"ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œ"æœ¬è„šæœ¬ã€‚
+  echo [´íÎó] ÐèÒª¹ÜÀíÔ±È¨ÏÞ: ÇëÓÒ¼ü"ÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ"±¾½Å±¾¡£
   exit /b 1
 )
 
-echo [1/4] åœæ­¢å¹¶åˆ é™¤æœåŠ¡
-sc stop %SVC% >nul 2>&1
-timeout /t 2 >nul
-sc delete %SVC% >nul 2>&1
+echo [1/4] Í£Ö¹²¢É¾³ý·þÎñ
+REM Ë³ÐòºÜ¹Ø¼ü: ÏÈÇå¿Õ·þÎñµÄ"±ÀÀ£×Ô¶¯ÖØÆô"¶¯×÷, ÔÙÍ£/É±½ø³Ì¡£
+REM ·ñÔòÉ±µô·þÎñ½ø³Ì»á±» SCM ÅÐ¶¨Îª±ÀÀ£, °´ sc failure µÄ restart ¶¯×÷ÔÚ¼¸Ãëºó
+REM ×Ô¶¯À­Æð -> ·þÎñÓÀÔ¶Í£ÔÚ RUNNING, sc delete Ö»ÄÜ"±ê¼ÇÉ¾³ý", ÌõÄ¿²»ÏûÊ§¡£
 sc query %SVC% >nul 2>&1
-REM ç”¨æ ‡ç­¾è€Œä¸æ˜¯å•è¡Œ if/else: cmd è§£æžæ‹¬å·å—æ—¶, åŒä¸€è¡Œæ—¢æœ‰ä¸­æ–‡åˆæœ‰
-REM ASCII æ‹¬å·ä¼šè¢« DBCS è§£ç é”™ä½åžæŽ‰å³æ‹¬å·, æŠ¥"æ­¤æ—¶ä¸åº”æœ‰ å³æ‹¬å·"ã€‚
+if not errorlevel 1 sc failure %SVC% reset= 0 actions= "" >nul 2>&1
+sc stop %SVC% >nul 2>&1
+ping -n 3 127.0.0.1 >nul
+REM ÏÈÉ±µô·þÎñÀ­ÆðµÄ½ø³Ì: ·ñÔò sc delete Ö»"±ê¼ÇÉ¾³ý", ½ø³Ì²»ÍËÔò·þÎñÌõÄ¿²»ÏûÊ§
+for /f "tokens=3" %%p in ('sc queryex %SVC% 2^>nul ^| findstr /R "PID *:"') do taskkill /F /PID %%p >nul 2>&1
+ping -n 2 127.0.0.1 >nul
 sc delete %SVC% >nul 2>&1
-if errorlevel 1 goto svc_still_there
-echo    æœåŠ¡å·²åˆ é™¤
+REM ÂÖÑ¯Ö±µ½ÌõÄ¿³¹µ×ÏûÊ§(sc delete ÊÇÒì²½µÄ), ·ñÔò»áÎó±¨"·þÎñÈÔÔÚ"
+set "SVC_GONE="
+for /l %%i in (1,1,30) do (
+  if not defined SVC_GONE (
+    sc query %SVC% >nul 2>&1
+    if errorlevel 1 (set "SVC_GONE=1") else (ping -n 2 127.0.0.1 >nul)
+  )
+)
+REM ÓÃ sc query µÄ´æÔÚÐÔ(¶ø·Ç sc delete µÄ±¨´í)ÅÐ¶¨: ²»´æÔÚ=ÒÑÉ¾, ´æÔÚ=ÈÔÔÚ
+if defined SVC_GONE goto svc_gone
+echo    [¾¯¸æ] ·þÎñÈÔÔÚ, ¿ÉÉÔºóÖØÊÔ sc delete %SVC%
 goto svc_check_done
-:svc_still_there
-echo    [è­¦å‘Š] æœåŠ¡ä»åœ¨, å¯ç¨åŽé‡è¯• sc delete %SVC%
+:svc_gone
+echo    ·þÎñÒÑÉ¾³ý(»ò±¾¾Í²»´æÔÚ)
 :svc_check_done
 
-echo [2/4] ç»“æŸæ®‹ç•™è¿›ç¨‹
+
+echo [2/4] ½áÊø²ÐÁô½ø³Ì
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8899" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":28898" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
 
-echo [3/4] å…³é—­ç³»ç»Ÿä»£ç†
+echo [3/4] ¹Ø±ÕÏµÍ³´úÀí
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul
 
-echo [4/4] ä¿ç•™é…ç½®ä¸Žè¯ä¹¦äºŽ %DEST%
+echo [4/4] ±£ÁôÅäÖÃÓëÖ¤ÊéÓÚ %DEST%
 echo.
-echo å®Œæˆã€‚è‹¥è¿˜æƒ³ä¿ç•™"ç™»å½•è‡ªå¯"è®¡åˆ’ä»»åŠ¡æ¨¡å¼, å¯é‡æ–°è¿è¡Œ install-windows.bat
-echo å½»åº•æ¸…ç†è¯·è¿è¡Œ uninstall-windows.bat
+echo Íê³É¡£Èô»¹Ïë±£Áô"µÇÂ¼×ÔÆô"¼Æ»®ÈÎÎñÄ£Ê½, ¿ÉÖØÐÂÔËÐÐ install-windows.bat
+echo ³¹µ×ÇåÀíÇëÔËÐÐ uninstall-windows.bat
 endlocal

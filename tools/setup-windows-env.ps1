@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     hublane Windows 环境引导: 用 winget 补齐缺失的系统软件, 并建立 .venv。
 

@@ -1,39 +1,39 @@
 @echo off
-chcp 65001 >nul
+chcp 936 >nul
 setlocal
-title hublane å¸è½½
+title hublane Ð¶ÔØ
 
 set "DEST=%LOCALAPPDATA%\hublane"
 
 echo ============================================
-echo   hublane å¸è½½
+echo   hublane Ð¶ÔØ
 echo ============================================
 echo.
 
-echo [1/5] å…³é—­ç³»ç»Ÿä»£ç†
+echo [1/5] ¹Ø±ÕÏµÍ³´úÀí
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul
 
-echo [2/5] ç§»é™¤è®¡åˆ’ä»»åŠ¡ä¸Ž Run é¡¹
+echo [2/5] ÒÆ³ý¼Æ»®ÈÎÎñÓë Run Ïî
 schtasks /end   /tn hublane >nul 2>&1
 schtasks /delete /tn hublane /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v hublane /f >nul 2>&1
 
-echo [3/5] ç§»é™¤æœ¬åœ° CA
+echo [3/5] ÒÆ³ý±¾µØ CA
 certutil -delstore -user Root "hublane Local Relay CA" >nul 2>&1
 certutil -delstore      Root "hublane Local Relay CA" >nul 2>&1
 
-echo [4/5] ç»“æŸæ®‹ç•™è¿›ç¨‹
-REM run-loop.bat æ˜¯ goto loop æ­»å¾ªçŽ¯: åªæ€ python.exe æ²¡ç”¨, ç›‘ç®¡å®ƒçš„ cmd.exe
-REM ä¼šåœ¨ 3 ç§’åŽé‡æ–°æ‹‰èµ·ã€‚å…ˆæŒ‰å‘½ä»¤è¡Œæ€æŽ‰æ•´ä¸ªè¿›ç¨‹æ ‘, å†æŒ‰ç«¯å£å…œåº•ã€‚
+echo [4/5] ½áÊø²ÐÁô½ø³Ì
+REM run-loop.bat ÊÇ goto loop ËÀÑ­»·: Ö»É± python.exe Ã»ÓÃ, ¼à¹ÜËüµÄ cmd.exe
+REM »áÔÚ 3 ÃëºóÖØÐÂÀ­Æð¡£ÏÈ°´ÃüÁîÐÐÉ±µôÕû¸ö½ø³ÌÊ÷, ÔÙ°´¶Ë¿Ú¶µµ×¡£
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run-loop*' -or $_.CommandLine -like '*hublane.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8899" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":28898" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
 
-echo [5/5] æ¸…ç†è‡ªå¯è„šæœ¬
+echo [5/5] ÇåÀí×ÔÆô½Å±¾
 del /Q "%DEST%\run-loop.bat" >nul 2>&1
 del /Q "%DEST%\launch.vbs"   >nul 2>&1
 
 echo.
-echo å®Œæˆã€‚é…ç½®ä¸Žè¯ä¹¦ä¿ç•™åœ¨ %DEST%ï¼Œå¦‚éœ€å½»åº•åˆ é™¤è¯·æ‰‹åŠ¨åˆ é™¤è¯¥ç›®å½•ã€‚
-echo é‡æ–°éƒ¨ç½²: install-windows.bat
+echo Íê³É¡£ÅäÖÃÓëÖ¤Êé±£ÁôÔÚ %DEST%£¬ÈçÐè³¹µ×É¾³ýÇëÊÖ¶¯É¾³ý¸ÃÄ¿Â¼¡£
+echo ÖØÐÂ²¿Êð: install-windows.bat
 endlocal

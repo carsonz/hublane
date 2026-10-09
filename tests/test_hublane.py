@@ -548,7 +548,8 @@ class TestCertSan(unittest.TestCase):
         want = set(H.leaf_san().split(","))
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for name in ("install.sh", "install-windows.bat"):
-            with open(os.path.join(root, name), encoding="utf-8") as fh:
+            with open(os.path.join(root, name),
+                      encoding=("gbk" if name.endswith(".bat") else "utf-8")) as fh:
                 found = set(re.findall(r"DNS:[A-Za-z0-9.*\-]+", fh.read()))
             missing = sorted(want - found)
             self.assertEqual(missing, [], "%s 缺少 SAN: %s" % (name, missing[:5]))
@@ -577,7 +578,8 @@ class TestCaExtensions(unittest.TestCase):
         """install.sh / install-windows.bat 不能落后于 hublane.py"""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for name in ("install.sh", "install-windows.bat"):
-            with open(os.path.join(root, name), encoding="utf-8") as fh:
+            with open(os.path.join(root, name),
+                      encoding=("gbk" if name.endswith(".bat") else "utf-8")) as fh:
                 text = fh.read()
             for ext in H.CA_EXTENSIONS:
                 self.assertIn(ext, text, "%s 缺少 CA 扩展: %s" % (name, ext))
@@ -1440,6 +1442,107 @@ class TestMisc(unittest.TestCase):
         self.assertIn(H._u_key("raw", "ghproxy_com"), H._ustat)
 
 
+class TestWindowsInstallParity(unittest.TestCase):
+    """Windows 安装脚本能力对齐(v0.2.0 第 1 条)与脚本自身的坑
+
+    这些只能静态断言兜底 —— cmd / PowerShell 的解析错误不会在 Linux CI 上暴露,
+    而是等用户实机安装时才炸(历史已炸过三次)。
+    """
+
+    SCRIPTS = ("install.sh", "install-windows.bat", "install-windows-service.bat",
+               "uninstall-windows.bat", "uninstall-windows-service.bat",
+               "tools/setup-firefox-policy.ps1")
+
+    @classmethod
+    def setUpClass(cls):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cls.root = root
+        cls.texts = {}
+        for name in cls.SCRIPTS:
+            with open(os.path.join(root, name), "rb") as fh:
+                raw = fh.read()
+            # .bat 是 GBK(CP936) 无 BOM; .ps1 是 UTF-8 带 BOM —— 各自按真实编码解码
+            if name.endswith(".bat"):
+                cls.texts[name] = raw.decode("gbk")
+            else:
+                cls.texts[name] = raw.decode("utf-8-sig")
+
+    def test_renew_passthrough_on_windows(self):
+        """--renew-certs / --renew-ca 透传不能只做 Linux 侧"""
+        for name in ("install-windows.bat", "install-windows-service.bat"):
+            text = self.texts[name]
+            self.assertIn("--renew-certs", text, "%s 缺少 --renew-certs 透传" % name)
+            self.assertIn("--renew-ca", text, "%s 缺少 --renew-ca 透传" % name)
+            self.assertIn("--config", text)
+
+    def test_firefox_policy_implemented(self):
+        """此前只 echo 一句"请手动导入", 承诺的 policies.json 从未实现"""
+        ff = self.texts["tools/setup-firefox-policy.ps1"]
+        self.assertIn("Certificates", ff)
+        self.assertIn("ImportEnterpriseRoots", ff)
+        self.assertIn("policies.json", ff)
+        for name in ("install-windows.bat", "install-windows-service.bat"):
+            self.assertIn("setup-firefox-policy.ps1", self.texts[name],
+                          "%s 没有接 Firefox policies.json" % name)
+
+    def test_windows_scripts_are_crlf(self):
+        """.bat / .ps1 必须用 CRLF; LF 会让 cmd 解析括号块出错(.gitattributes 管不到工作区)"""
+        bats = [n for n in self.SCRIPTS if n.endswith(".bat")]
+        bats.append("tools/setup-firefox-policy.ps1")
+        for name in bats:
+            with open(os.path.join(self.root, name), "rb") as fh:
+                raw = fh.read()
+            self.assertIn(b"\r\n", raw, "%s 不是 CRLF" % name)
+            self.assertNotIn(b"\n", raw.replace(b"\r\n", b""),
+                             "%s 混入裸 LF" % name)
+
+    def test_windows_batch_are_gbk_no_bom(self):
+        """Windows 批处理中文编码坑(已在中文 Windows 实机复现):
+
+        - 不能 UTF-8 无 BOM: 中文 Windows 默认 OEM 是 CP936, cmd 把无 BOM 的
+          UTF-8 .bat 当 GBK 解码, 中文变乱码, 乱码字节里混进 ')'/'&' 把结构打碎,
+          报一堆"不是内部或外部命令"(install/uninstall 的 service bat 实测炸过)。
+        - 不能加 UTF-8 BOM: cmd 不识别 BOM, 会把 EF BB BF 当成首行内容弄坏
+          @echo off(表现为 '锘匡豢@echo' 不是内部命令)。
+        - 唯一稳妥: 文件本身存成 GBK(CP936) 无 BOM, 与系统解码一致; 且脚本里
+          chcp 用 936 而非 65001, 让控制台输出编码与文件一致。
+        """
+        for name in self.SCRIPTS:
+            if not name.endswith(".bat"):
+                continue
+            with open(os.path.join(self.root, name), "rb") as fh:
+                raw = fh.read()
+            # 绝不能带 UTF-8 BOM —— cmd 会把 BOM 当首行内容
+            self.assertNotIn(b"\xef\xbb\xbf", raw,
+                             "%s 不应有 UTF-8 BOM(cmd 会弄坏首行)" % name)
+            # 必须能被 CP936(GBK) 无损解码 —— 证明它本就是 GBK 编码
+            try:
+                text = raw.decode("gbk")
+            except UnicodeDecodeError:
+                self.fail("%s 不是合法 GBK 编码(中文 Windows 会读成乱码)" % name)
+            # 脚本内 chcp 必须是 936, 与 GBK 文件编码一致(不是 65001)
+            self.assertIn("chcp 936", text,
+                          "%s 应使用 chcp 936(与 GBK 文件编码一致)" % name)
+            self.assertNotIn("chcp 65001", text,
+                             "%s 不应使用 chcp 65001(与 GBK 文件编码冲突)" % name)
+
+    def test_powershell_scripts_have_utf8_bom(self):
+        """无 BOM 时 Windows PowerShell 5.1 按 ANSI 解码中文, 双字节序列可能
+        "造出"一个 `{` 或引号, 让整段脚本语法错误(setup-git-ssh.ps1 实测过)"""
+        for name in ("tools/setup-firefox-policy.ps1", "tools/setup-git-ssh.ps1",
+                     "tools/setup-windows-env.ps1", "tools/verify-windows.ps1"):
+            with open(os.path.join(self.root, name), "rb") as fh:
+                head = fh.read(3)
+            self.assertEqual(head, b"\xef\xbb\xbf", "%s 缺少 UTF-8 BOM" % name)
+
+    def test_wait_uses_ping_not_timeout(self):
+        """timeout 在 stdin 不是控制台时(脚本调脚本/输出重定向)直接报错退出"""
+        for name in ("install-windows.bat", "install-windows-service.bat",
+                     "uninstall-windows-service.bat"):
+            self.assertNotIn("timeout /t", self.texts[name],
+                             "%s 仍在用 timeout 等待" % name)
+
+
 class TestV020Features(unittest.TestCase):
     """v0.2.0 新增项的单元覆盖
 
@@ -1577,6 +1680,20 @@ class TestV020Features(unittest.TestCase):
         finally:
             H.set_paused(False)
 
+    # ---- Windows 实测发现的面板渲染问题 ----
+    def test_panel_autorefresh_keeps_url_tool_input(self):
+        """meta refresh 每 5s 整页重载, 会把 URL 工具里贴的 URL 与生成结果
+        一起清掉(Chrome/Edge 实测); 改为 JS 定时刷新并在输入框有内容时跳过"""
+        page = H.panel_html()
+        self.assertNotIn('http-equiv="refresh"', page)
+        self.assertIn("setInterval", page)
+        self.assertIn("hlUrl", page)
+
+    def test_panel_sort_keeps_header_row(self):
+        """表格没有 <thead>, 表头行就在 tbody 里 —— 不筛掉的话第一次排序
+        表头会被当成数据行挪走(Chrome/Edge 实测)"""
+        self.assertIn("!r.querySelector('th')", H.panel_html())
+
     # ---- 第 9 条: URL -> 等价命令 ----
     def test_cmd_for_url_git(self):
         got = H.cmd_for_url("https://github.com/o/r.git")
@@ -1622,16 +1739,20 @@ class TestV020Features(unittest.TestCase):
         class FakeResp(object):
             def __init__(self, data):
                 self._d = json.dumps(data).encode("utf-8")
+
             def read(self):
                 return self._d
+
             def __enter__(self):
                 return self
+
             def __exit__(self, *a):
                 return False
 
         class FakeOpener(object):
             def __init__(self, data):
                 self.d = data
+
             def open(self, url, timeout=None):
                 return FakeResp(self.d)
 
