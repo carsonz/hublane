@@ -1,60 +1,64 @@
 @echo off
-chcp 65001 >nul
+REM ±¾ÎÄ¼þÒÔ GBK(936) ±£´æ¡¢ÇÒ²»´ø BOM, ±ØÐëÓëÏÂÃæµÄ chcp 936 Æ¥Åä, ·ñÔòÖÐÎÄÂÒÂë¡£
+REM Ç§Íò²»Òª¸Ä³É UTF-8: cmd ¶ÁÈ¡Åú´¦ÀíÎÄ¼þÊ±°´ÏµÍ³ ANSI ´úÂëÒ³½âÂë, »»³É 65001 »á·­³µ ¡ª¡ª
+REM   ÎÞ BOM Ê±×Ö½Ú´íÎ», REM ×¢ÊÍ±»µ±ÃüÁîÖ´ÐÐ(±¨ "'xx' ²»ÊÇÄÚ²¿»òÍâ²¿ÃüÁî");
+REM   ÓÐ BOM Ê±Ê×ÐÐ±» BOM ÎÛÈ¾(±¨ "@echo off ²»ÊÇÄÚ²¿»òÍâ²¿ÃüÁî")¡£
+chcp 936 >nul
 setlocal enabledelayedexpansion
 title hublane for Windows
 
 set "SRC=%~dp0"
 set "DEST=%LOCALAPPDATA%\hublane"
 set "PORT=8899"
-REM è®©å†…åµŒ Python ç”¨ UTF-8 è¯»å†™, å¦åˆ™ä¸­æ–‡è¾“å‡ºåœ¨ cmd é‡Œæ˜¯ä¹±ç 
+REM ÈÃÄÚÇ¶ Python ÓÃ UTF-8 ¶ÁÐ´, ·ñÔòÖÐÎÄÊä³öÔÚ cmd ÀïÊÇÂÒÂë
 set "PYTHONUTF8=1"
 
 echo ============================================
-echo   hublane for Windows - æ›¿ä»£ Watt Toolkit
+echo   hublane for Windows - Ìæ´ú Watt Toolkit
 echo ============================================
 echo.
 
-REM åªæ¥é—®ç”¨æ³•å°±åˆ«åŠ¨ç³»ç»Ÿ: æ”¾åœ¨æœ€å‰é¢, ä¸æ£€æµ‹ Pythonã€ä¸å†™ä»»ä½•æ–‡ä»¶
+REM Ö»À´ÎÊÓÃ·¨¾Í±ð¶¯ÏµÍ³: ·ÅÔÚ×îÇ°Ãæ, ²»¼ì²â Python¡¢²»Ð´ÈÎºÎÎÄ¼þ
 for %%A in (%*) do (
   if /I "%%~A"=="--help" goto :usage
   if /I "%%~A"=="-h" goto :usage
 )
 
-REM ---------- 1. æŸ¥æ‰¾ Python ----------
+REM ---------- 1. ²éÕÒ Python ----------
 set "PYEXE="
 where py >nul 2>nul && set "PYEXE=py"
 if not defined PYEXE (where python >nul 2>nul && set "PYEXE=python")
 if not defined PYEXE (
-  echo [é”™è¯¯] æœªæ‰¾åˆ° Pythonã€‚
-  echo        è¯·å…ˆå®‰è£…:  winget install Python 3.12
+  echo [´íÎó] Î´ÕÒµ½ Python¡£
+  echo        ÇëÏÈ°²×°:  winget install Python 3.12
   exit /b 1
 )
 echo [1/7] Python: %PYEXE%
-REM è§£æžæˆç»å¯¹è·¯å¾„: è®¡åˆ’ä»»åŠ¡ / Run é¡¹çš„è¿è¡ŒçŽ¯å¢ƒä¸ä¸€å®šæœ‰ py å¯åŠ¨å™¨,
-REM åªå†™ "py" ä¼šè®© run-loop.bat é™é»˜å¤±è´¥å¹¶é™·å…¥ 3 ç§’æ­»å¾ªçŽ¯ã€‚
+REM ½âÎö³É¾ø¶ÔÂ·¾¶: ¼Æ»®ÈÎÎñ / Run ÏîµÄÔËÐÐ»·¾³²»Ò»¶¨ÓÐ py Æô¶¯Æ÷,
+REM Ö»Ð´ "py" »áÈÃ run-loop.bat ¾²Ä¬Ê§°Ü²¢ÏÝÈë 3 ÃëËÀÑ­»·¡£
 for /f "delims=" %%p in ('%PYEXE% -c "import sys;print(sys.executable)"') do set "PYEXE=%%p"
 "%PYEXE%" -V
 
-REM ---------- 2. éƒ¨ç½² ----------
-echo [2/7] éƒ¨ç½²åˆ° %DEST%
+REM ---------- 2. ²¿Êð ----------
+echo [2/7] ²¿Êðµ½ %DEST%
 if not exist "%DEST%" mkdir "%DEST%"
 copy /Y "%SRC%hublane.py"  "%DEST%\" >nul
 
-REM é…ç½®: å·²å­˜åœ¨åˆ™ä¿ç•™, å‘è¡ŒåŒ…é‡Œçš„æ–°ç‰ˆå¦å­˜ä¸º config.json.new
-REM ä»¥å‰è¿™é‡Œæ˜¯ copy /Y "%SRC%config.json" "%DEST%\" â€”â€” æ— æ¡ä»¶è¦†ç›–,
-REM äºŽæ˜¯æ¯æ¬¡å‡çº§éƒ½ä¼šé™é»˜ä¸¢æŽ‰ç”¨æˆ·çš„è‡ªå®šä¹‰(ç«¯å£ / token / ä¸Šæ¸¸é€‰æ‹©)ã€‚
+REM ÅäÖÃ: ÒÑ´æÔÚÔò±£Áô, ·¢ÐÐ°üÀïµÄÐÂ°æÁí´æÎª config.json.new
+REM ÒÔÇ°ÕâÀïÊÇ copy /Y "%SRC%config.json" "%DEST%\" ¡ª¡ª ÎÞÌõ¼þ¸²¸Ç,
+REM ÓÚÊÇÃ¿´ÎÉý¼¶¶¼»á¾²Ä¬¶ªµôÓÃ»§µÄ×Ô¶¨Òå(¶Ë¿Ú / token / ÉÏÓÎÑ¡Ôñ)¡£
 set "RESET_CONFIG=0"
-REM v0.2.0 ç¬¬ 1 æ¡: è¯ä¹¦ç»­æœŸé€ä¼ ã€‚æ­¤å‰è·¯çº¿å›¾å†™äº†"é€ä¼  --renew"å´ä»Žæœªå®žçŽ°,
-REM ç»­æœŸåªèƒ½æ‰‹æ•² hublane.py --renew-certs; è¿™é‡Œå¤ç”¨ hublane.py è‡ªå·±çš„å®žçŽ°,
-REM ä¸Žæ‰‹æ•²å‘½ä»¤å®Œå…¨åŒä¸€æ¡ä»£ç è·¯å¾„(--renew-ca æ—¶ä¸‹é¢çš„ [4/7] ä¼šé¡ºå¸¦é‡è£…ä¿¡ä»»)ã€‚
+REM v0.2.0 µÚ 1 Ìõ: Ö¤ÊéÐøÆÚÍ¸´«¡£´ËÇ°Â·ÏßÍ¼Ð´ÁË"Í¸´« --renew"È´´ÓÎ´ÊµÏÖ,
+REM ÐøÆÚÖ»ÄÜÊÖÇÃ hublane.py --renew-certs; ÕâÀï¸´ÓÃ hublane.py ×Ô¼ºµÄÊµÏÖ,
+REM ÓëÊÖÇÃÃüÁîÍêÈ«Í¬Ò»Ìõ´úÂëÂ·¾¶(--renew-ca Ê±ÏÂÃæµÄ [4/7] »áË³´øÖØ×°ÐÅÈÎ)¡£
 set "RENEW_FLAG="
 for %%A in (%*) do (
   if /I "%%~A"=="--reset-config" set "RESET_CONFIG=1"
   if /I "%%~A"=="--renew-certs" set "RENEW_FLAG=--renew-certs"
   if /I "%%~A"=="--renew-ca" set "RENEW_FLAG=--renew-ca"
 )
-REM æ³¨æ„: è¿™é‡Œå¿…é¡»æ˜¯ å¤–å±‚çš„ if exist é… else (é¦–æ¬¡å®‰è£…æ—¶ config.json ä¸å­˜åœ¨è¦å¤åˆ¶),
-REM ä¸èƒ½å†™æˆ  if exist ( if ...) else (copy)  â€”â€” é‚£æ ·é¦–æ¬¡å®‰è£…å¤–å±‚ä¸ºå‡, å†…å±‚ else æ°¸è¿œä¸è·‘åˆ°ã€‚
+REM ×¢Òâ: ÕâÀï±ØÐëÊÇ Íâ²ãµÄ if exist Åä else (Ê×´Î°²×°Ê± config.json ²»´æÔÚÒª¸´ÖÆ),
+REM ²»ÄÜÐ´³É  if exist ( if ...) else (copy)  ¡ª¡ª ÄÇÑùÊ×´Î°²×°Íâ²ãÎª¼Ù, ÄÚ²ã else ÓÀÔ¶²»ÅÜµ½¡£
 if exist "%DEST%\config.json" (
   if "%RESET_CONFIG%"=="0" (
     powershell -NoProfile -Command ^
@@ -62,76 +66,76 @@ if exist "%DEST%\config.json" (
     if errorlevel 1 (
       copy /Y "%DEST%\config.json" "%DEST%\config.json.bak" >nul
       copy /Y "%SRC%config.json"   "%DEST%\config.json.new" >nul
-      echo   å·²ä¿ç•™ä½ çŽ°æœ‰çš„ config.json ^(æ—§å€¼å¦å­˜ä¸º config.json.bak^)
-      echo   å‘è¡ŒåŒ…é‡Œçš„æ–°ç‰ˆé»˜è®¤é…ç½®å·²å†™åˆ°: %DEST%\config.json.new
-      echo   -^> æ–°å¢ž/å˜æ›´çš„é”®è¯·è‡ªè¡Œåˆå¹¶:  fc %DEST%\config.json %DEST%\config.json.new
-      echo   -^> æƒ³ç›´æŽ¥ç”¨æ–°ç‰ˆ:  install-windows.bat --reset-config
+      echo   ÒÑ±£ÁôÄãÏÖÓÐµÄ config.json ^(¾ÉÖµÁí´æÎª config.json.bak^)
+      echo   ·¢ÐÐ°üÀïµÄÐÂ°æÄ¬ÈÏÅäÖÃÒÑÐ´µ½: %DEST%\config.json.new
+      echo   -^> ÐÂÔö/±ä¸üµÄ¼üÇë×ÔÐÐºÏ²¢:  fc %DEST%\config.json %DEST%\config.json.new
+      echo   -^> ÏëÖ±½ÓÓÃÐÂ°æ:  install-windows.bat --reset-config
     ) else (
       del /Q "%DEST%\config.json.new" >nul 2>&1
-      echo   config.json ä¸Žå‘è¡Œç‰ˆä¸€è‡´, ä¿æŒä¸åŠ¨
+      echo   config.json Óë·¢ÐÐ°æÒ»ÖÂ, ±£³Ö²»¶¯
     )
   ) else (
     copy /Y "%SRC%config.json" "%DEST%\" >nul
     del /Q "%DEST%\config.json.new" >nul 2>&1
-    echo   å·²æŒ‰ --reset-config è¦†ç›–ä¸ºå‘è¡Œç‰ˆé»˜è®¤é…ç½®
+    echo   ÒÑ°´ --reset-config ¸²¸ÇÎª·¢ÐÐ°æÄ¬ÈÏÅäÖÃ
   )
 ) else (
   copy /Y "%SRC%config.json" "%DEST%\" >nul
-  echo   å·²å†™å…¥å‘è¡Œç‰ˆé»˜è®¤é…ç½® config.json
+  echo   ÒÑÐ´Èë·¢ÐÐ°æÄ¬ÈÏÅäÖÃ config.json
 )
 
-REM ---------- 2b. æœ¬åœ°ç”Ÿæˆ CA + å¶å­è¯ä¹¦ (ä¸å‘ä»“åº“æäº¤ä»»ä½•ç§é’¥) ----------
+REM ---------- 2b. ±¾µØÉú³É CA + Ò¶×ÓÖ¤Êé (²»Ïò²Ö¿âÌá½»ÈÎºÎË½Ô¿) ----------
 call :gen_certs "%DEST%"
 if errorlevel 1 exit /b 1
 
-REM ---------- 2c. v0.2.0 ç¬¬ 1 æ¡: é€ä¼  --renew-certs / --renew-ca ----------
-REM æ”¾åœ¨éƒ¨ç½²ä¹‹åŽã€è£…ä¿¡ä»»ä¹‹å‰: ç»­å‡ºæ¥çš„ CA æ­£å¥½ç”±ä¸‹é¢çš„ [4/7] è£…è¿›ç³»ç»Ÿä¿¡ä»»åº“,
-REM ç”¨æˆ·ä¸å¿…å†æ‰‹æ•²ä¸€æ¬¡å‘½ä»¤ã€‚è¿™é‡Œç”¨æ ‡ç­¾è·³è½¬è€Œä¸æ˜¯ if å— â€”â€” cmd è§£æžæ‹¬å·å—æ—¶,
-REM åŒä¸€è¡Œé‡Œæ—¢æœ‰ä¸­æ–‡åˆæœ‰ ASCII æ‹¬å·ä¼šè¢« DBCS è§£ç é”™ä½åžæŽ‰å³æ‹¬å·(è§ [4/7] æ³¨é‡Š)ã€‚
+REM ---------- 2c. v0.2.0 µÚ 1 Ìõ: Í¸´« --renew-certs / --renew-ca ----------
+REM ·ÅÔÚ²¿ÊðÖ®ºó¡¢×°ÐÅÈÎÖ®Ç°: Ðø³öÀ´µÄ CA ÕýºÃÓÉÏÂÃæµÄ [4/7] ×°½øÏµÍ³ÐÅÈÎ¿â,
+REM ÓÃ»§²»±ØÔÙÊÖÇÃÒ»´ÎÃüÁî¡£ÕâÀïÓÃ±êÇ©Ìø×ª¶ø²»ÊÇ if ¿é ¡ª¡ª cmd ½âÎöÀ¨ºÅ¿éÊ±,
+REM Í¬Ò»ÐÐÀï¼ÈÓÐÖÐÎÄÓÖÓÐ ASCII À¨ºÅ»á±» DBCS ½âÂë´íÎ»ÍÌµôÓÒÀ¨ºÅ(¼û [4/7] ×¢ÊÍ)¡£
 if not defined RENEW_FLAG goto renew_done
-echo [2.5/7] æŒ‰ %RENEW_FLAG% ç»­æœŸè¯ä¹¦
+echo [2.5/7] °´ %RENEW_FLAG% ÐøÆÚÖ¤Êé
 "%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" %RENEW_FLAG%
 if errorlevel 1 goto renew_fail
 goto renew_done
 :renew_fail
-echo   [é”™è¯¯] è¯ä¹¦ç»­æœŸå¤±è´¥, è¯·æŸ¥çœ‹ä¸Šé¢çš„è¾“å‡º
+echo   [´íÎó] Ö¤ÊéÐøÆÚÊ§°Ü, Çë²é¿´ÉÏÃæµÄÊä³ö
 exit /b 1
 :renew_done
 
-REM ---------- 3. P2 é…ç½®æ ¡éªŒ ----------
-echo [3/7] é…ç½®æ ¡éªŒ
+REM ---------- 3. P2 ÅäÖÃÐ£Ñé ----------
+echo [3/7] ÅäÖÃÐ£Ñé
 "%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" --check
 if errorlevel 1 (
-  echo   [é”™è¯¯] é…ç½®æ ¡éªŒæœªé€šè¿‡, è¯·ä¿®æ­£ %DEST%\config.json
+  echo   [´íÎó] ÅäÖÃÐ£ÑéÎ´Í¨¹ý, ÇëÐÞÕý %DEST%\config.json
   exit /b 1
 )
 
-REM ---------- 4. å®‰è£… CA ----------
-REM è¿™é‡Œåˆ»æ„ç”¨æ ‡ç­¾è·³è½¬è€Œä¸æ˜¯ if ... ( ... ) else ( ... ):
-REM cmd.exe è§£æžæ‹¬å·å—æ—¶, åŒä¸€è¡Œé‡Œæ—¢æœ‰ä¸­æ–‡åˆæœ‰ ASCII æ‹¬å·ä¼šè¢« DBCS è§£ç 
-REM é”™ä½åžæŽ‰å³æ‹¬å·, æŠ¥"æ­¤æ—¶ä¸åº”æœ‰ å³æ‹¬å·"ä¹‹ç±»çš„è§£æžé”™, è€Œä¸”æ°å¥½åœ¨æŠ¥é”™åˆ†æ”¯é‡Œã€‚
-echo [4/7] å®‰è£…æœ¬åœ° CA åˆ°å½“å‰ç”¨æˆ·å—ä¿¡ä»»æ ¹è¯ä¹¦é¢å‘æœºæž„
+REM ---------- 4. °²×° CA ----------
+REM ÕâÀï¿ÌÒâÓÃ±êÇ©Ìø×ª¶ø²»ÊÇ if ... ( ... ) else ( ... ):
+REM cmd.exe ½âÎöÀ¨ºÅ¿éÊ±, Í¬Ò»ÐÐÀï¼ÈÓÐÖÐÎÄÓÖÓÐ ASCII À¨ºÅ»á±» DBCS ½âÂë
+REM ´íÎ»ÍÌµôÓÒÀ¨ºÅ, ±¨"´ËÊ±²»Ó¦ÓÐ ÓÒÀ¨ºÅ"Ö®ÀàµÄ½âÎö´í, ¶øÇÒÇ¡ºÃÔÚ±¨´í·ÖÖ§Àï¡£
+echo [4/7] °²×°±¾µØ CA µ½µ±Ç°ÓÃ»§ÊÜÐÅÈÎ¸ùÖ¤Êé°ä·¢»ú¹¹
 certutil -addstore -user -f Root "%DEST%\ca.crt" >nul 2>&1
 if errorlevel 1 goto ca_machine
-echo   CA å·²å®‰è£… - å½“å‰ç”¨æˆ·
+echo   CA ÒÑ°²×° - µ±Ç°ÓÃ»§
 goto ca_done
 :ca_machine
 certutil -addstore -f Root "%DEST%\ca.crt" >nul 2>&1
 if errorlevel 1 goto ca_fail
-echo   CA å·²å®‰è£… - æœ¬åœ°è®¡ç®—æœº
+echo   CA ÒÑ°²×° - ±¾µØ¼ÆËã»ú
 goto ca_done
 :ca_fail
-echo   [è­¦å‘Š] CA å®‰è£…å¤±è´¥, è¯·ä»¥ç®¡ç†å‘˜èº«ä»½é‡æ–°è¿è¡Œæœ¬è„šæœ¬
+echo   [¾¯¸æ] CA °²×°Ê§°Ü, ÇëÒÔ¹ÜÀíÔ±Éí·ÝÖØÐÂÔËÐÐ±¾½Å±¾
 :ca_done
 
-REM ---------- 5. P1 è‡ªæ„ˆå¼å¯åŠ¨ (è®¡åˆ’ä»»åŠ¡ + å´©æºƒé‡å¯å¾ªçŽ¯) ----------
-echo [5/7] åˆ›å»ºè‡ªæ„ˆå¼å¯åŠ¨ - è®¡åˆ’ä»»åŠ¡, å´©æºƒåŽ 3 ç§’è‡ªåŠ¨é‡å¯
+REM ---------- 5. P1 ×ÔÓúÊ½Æô¶¯ (¼Æ»®ÈÎÎñ + ±ÀÀ£ÖØÆôÑ­»·) ----------
+echo [5/7] ´´½¨×ÔÓúÊ½Æô¶¯ - ¼Æ»®ÈÎÎñ, ±ÀÀ£ºó 3 Ãë×Ô¶¯ÖØÆô
 > "%DEST%\run-loop.bat" (
   echo @echo off
   echo :loop
   echo "%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" ^>^> "%DEST%\hublane.log" 2^>^&1
-  REM ç”¨ ping å…œåº•ç­‰ 3 ç§’: timeout åœ¨ stdin ä¸æ˜¯æŽ§åˆ¶å°æ—¶(è„šæœ¬é‡Œè°ƒè„šæœ¬/é‡å®šå‘è¾“å‡º)
-  REM ä¼šç›´æŽ¥æŠ¥ "Input redirection is not supported" é€€å‡º, ç­‰å¾…å°±è½ç©ºäº†(å®žæµ‹)ã€‚
+  REM ÓÃ ping ¶µµ×µÈ 3 Ãë: timeout ÔÚ stdin ²»ÊÇ¿ØÖÆÌ¨Ê±(½Å±¾Àïµ÷½Å±¾/ÖØ¶¨ÏòÊä³ö)
+  REM »áÖ±½Ó±¨ "Input redirection is not supported" ÍË³ö, µÈ´ý¾ÍÂä¿ÕÁË(Êµ²â)¡£
   echo ping -n 4 127.0.0.1 ^>nul
   echo goto loop
 )
@@ -139,30 +143,65 @@ echo [5/7] åˆ›å»ºè‡ªæ„ˆå¼å¯åŠ¨ - è®¡åˆ’ä»»åŠ¡, å´©æºƒåŽ 3 ç§’è‡ªåŠ¨é‡å¯
   echo Set sh = CreateObject^("Wscript.Shell"^)
   echo sh.Run "cmd /c ""%DEST%\run-loop.bat""", 0, False
 )
-schtasks /create /tn hublane /sc ONLOGON /tr "wscript.exe \"%DEST%\launch.vbs\"" /rl LIMITED /f >nul 2>&1
-if errorlevel 1 (
-  echo   [è­¦å‘Š] è®¡åˆ’ä»»åŠ¡åˆ›å»ºå¤±è´¥, æ”¹ä¸ºæ³¨å†Œè¡¨ Run é¡¹
-  reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v hublane ^
-      /t REG_SZ /d "wscript.exe \"%DEST%\launch.vbs\"" /f >nul
+REM ÕâÀïÈ«²¿ÓÃÇ¶Ì× if, ²»ÓÃ goto ±êÇ©: cmd ²éÕÒ ::±êÇ© ÊÇÖð×Ö½ÚÉ¨Ãè, Ò»µ©ÊÜ
+REM ±àÂë/»»ÐÐÓ°Ïì¾Í»á±¨"ÏµÍ³ÕÒ²»µ½Ö¸¶¨µÄÅú´¦Àí±êÇ©"²¢**Ö±½ÓÖÐÖ¹Õû¸ö½Å±¾**
+REM (ºóÃæµÄ [6/7][7/7] ¶¼²»ÔÙÖ´ÐÐ)¡£¶øÇÒ goto ¶Ô±êÇ©ÊÇÇ°×ºÆ¥Åä,
+REM autostart_launch »á±» ::autostart_launch_nosvc ÇÀÏÈÆ¥Åä, ¸ü¼ÓÎ£ÏÕ¡£
+REM ¹Ø¼ü: ÒÑ¾­ÊÇ·þÎñÄ£Ê½Ê±, ¾ø²»ÄÜÔÙ½¨¼Æ»®ÈÎÎñ/Run Ïî¡£
+REM ·þÎñ±¾Éí¸ºÔð¿ª»ú×ÔÆô(sc create start= auto)ºÍ±ÀÀ£ÖØÆô(sc failure), ÔÙµþÒ»Ìõ
+REM µÇÂ¼×ÔÆô¾Í»áÍ¬Ê±À­ÆðÁ½¸ö hublane ¡ª¡ª Ò»¸ö pythonw.exe(--service, LocalSystem),
+REM Ò»¸ö python.exe(--config, µ±Ç°ÓÃ»§)¡£Windows ÉÏ SO_REUSEADDR ÔÊÐíÁ½¸öÌ×½Ó×Ö
+REM °óÍ¬Ò»¶Ë¿Ú, ÓÚÊÇ 8899/28898 ±»Á½¸ö½ø³ÌÍ¬Ê± LISTENING, ÇëÇó±»Ëæ»ú·ÖÁ÷, ±íÏÖÎª
+REM Ê±Í¨Ê±²»Í¨¡¢Ãæ°å´ò²»¿ª¡¢net stop ºó¶Ë¿Ú¿´×Å»¹ÔÚ¡£
+set "SVC_MODE=0"
+sc query hublane >nul 2>&1
+if not errorlevel 1 set "SVC_MODE=1"
+
+if "!SVC_MODE!"=="1" (
+  echo   ¼ì²âµ½ hublane ÒÑ×¢²áÎªÏµÍ³·þÎñ(¿ª»ú×ÔÆô + ±ÀÀ£×Ô¶¯ÖØÆôÓÉ SCM ½Ó¹Ü^)
+  echo   ÒÑÌø¹ý¼Æ»®ÈÎÎñ / Run Ïî, ±ÜÃâÁ½¸öÊµÀýÇÀ 8899 ¶Ë¿Ú
+  echo   ÈçÐè¸Ä»Ø"µÇÂ¼×ÔÆô"Ä£Ê½, ÇëÏÈÒÔ¹ÜÀíÔ±Éí·ÝÔËÐÐ uninstall-windows-service.bat
+) else (
+  REM /create Ê§°Ü²»´ú±í"Ã»ÓÐÈÎÎñ": ·Ç¹ÜÀíÔ±»á»°Àï schtasks /create Ò»ÂÉ
+  REM Access is denied(Á¬ÐÂ½¨Ò»¸ö²»´æÔÚµÄÈÎÎñÒ²Ò»Ñù±»¾Ü), µ«ÈÎÎñÍùÍùÔç¾Í½¨ºÃÁË¡£
+  REM ´ËÊ±ÈôÔÙ¹Ò×¢²á±í Run Ïî, µÇÂ¼Ê±Á½Ìõ×ÔÆôÂ·¾¶»áÀ­ÆðÁ½¸ö run-loop.bat¡£
+  REM ËùÒÔÏÈ /query È·ÈÏÈÎÎñÊÇ·ñÒÑ´æÔÚ: ´æÔÚ¾ÍÑØÓÃ, Ö»ÓÐÕæµÄÃ»ÓÐÈÎÎñ²ÅÍË Run Ïî¡£
+  schtasks /create /tn hublane /sc ONLOGON /tr "wscript.exe \"%DEST%\launch.vbs\"" /rl LIMITED /f >nul 2>&1
+  if errorlevel 1 (
+    schtasks /query /tn hublane >nul 2>&1
+    if errorlevel 1 (
+      echo   [¾¯¸æ] ¼Æ»®ÈÎÎñ´´½¨Ê§°Ü, ¸ÄÎª×¢²á±í Run Ïî
+      reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v hublane ^
+          /t REG_SZ /d "wscript.exe \"%DEST%\launch.vbs\"" /f >nul
+    ) else (
+      echo   ¼Æ»®ÈÎÎñÒÑ´æÔÚ(µ±Ç°»á»°ÎÞÈ¨¸²¸Ç, ÑØÓÃÏÖÓÐÈÎÎñ; Î´¶îÍâÌí¼Ó Run Ïî^)
+    )
+  ) else (
+    echo   ¼Æ»®ÈÎÎñÒÑ´´½¨
+  )
 )
-schtasks /run /tn hublane >nul 2>&1
-if errorlevel 1 start "" wscript.exe "%DEST%\launch.vbs"
+
+REM ´¥·¢±¾´Î°²×°ºóµÄ¼´Ê±Æô¶¯¡£·þÎñÄ£Ê½ÒÑ¾­ÔÚÅÜÁË, ¾ø²»ÄÜÔÙÀ­ÆðµÚ¶þ¸öÊµÀý¡£
+set "NEED_LAUNCH=1"
+if "!SVC_MODE!"=="1" set "NEED_LAUNCH=0"
+if "!NEED_LAUNCH!"=="1" schtasks /run /tn hublane >nul 2>&1
+if "!NEED_LAUNCH!"=="1" if errorlevel 1 start "" wscript.exe "%DEST%\launch.vbs"
 ping -n 4 127.0.0.1 >nul
 
-REM ---------- 6. ç³»ç»Ÿä»£ç† ----------
-echo [6/7] è®¾ç½®ç³»ç»Ÿä»£ç† 127.0.0.1:%PORT%
+REM ---------- 6. ÏµÍ³´úÀí ----------
+echo [6/7] ÉèÖÃÏµÍ³´úÀí 127.0.0.1:%PORT%
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable   /t REG_DWORD /d 1 /f >nul
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyServer   /t REG_SZ /d "127.0.0.1:%PORT%" /f >nul
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyOverride /t REG_SZ /d "localhost;127.*;*.local" /f >nul
 
-REM ---------- 7. Git çš„ GitHub SSH å…¥å£ ----------
-REM hublane åªåšåŒ¿ååªè¯»åŠ é€Ÿ, å¸¦å‡­è¯çš„ git push åº”å½“èµ° SSHã€‚ä½†å—é™ç½‘ç»œå¸¸æŠŠ github.com
-REM çš„ DNS åŠ«æŒåˆ° 127.0.0.1 æˆ–å°æŽ‰ 22 ç«¯å£, äºŽæ˜¯ ssh è¿žåˆ°æœ¬æœº sshd è¢«æ‹’ â€”â€” è¡¨çŽ°ä¸º
-REM Permission denied å´æŸ¥ä¸å‡ºå¯†é’¥æœ‰ä»€ä¹ˆé—®é¢˜ã€‚æ£€æµ‹åˆ°å°±æŠŠ git@github.com åˆ‡åˆ° GitHub
-REM å®˜æ–¹çš„ ssh.github.com:443 å…¥å£ã€‚å¯ç”¨ --no-git-ssh è·³è¿‡, --git-ssh-always å¼ºåˆ¶å†™ã€‚
-REM è¿™é‡Œåˆ»æ„ç”¨æ ‡ç­¾è·³è½¬è€Œä¸æ˜¯ if å—: cmd è§£æžæ‹¬å·å—æ—¶, åŒä¸€è¡Œé‡Œæ—¢æœ‰ä¸­æ–‡åˆæœ‰ ASCII
-REM æ‹¬å·ä¼šè¢« DBCS è§£ç é”™ä½åžæŽ‰å³æ‹¬å·(è§ä¸Šé¢å®‰è£… CA é‚£æ®µçš„å¤„ç†)ã€‚
-echo [7/7] é…ç½® Git çš„ GitHub SSH å…¥å£
+REM ---------- 7. Git µÄ GitHub SSH Èë¿Ú ----------
+REM hublane Ö»×öÄäÃûÖ»¶Á¼ÓËÙ, ´øÆ¾Ö¤µÄ git push Ó¦µ±×ß SSH¡£µ«ÊÜÏÞÍøÂç³£°Ñ github.com
+REM µÄ DNS ½Ù³Öµ½ 127.0.0.1 »ò·âµô 22 ¶Ë¿Ú, ÓÚÊÇ ssh Á¬µ½±¾»ú sshd ±»¾Ü ¡ª¡ª ±íÏÖÎª
+REM Permission denied È´²é²»³öÃÜÔ¿ÓÐÊ²Ã´ÎÊÌâ¡£¼ì²âµ½¾Í°Ñ git@github.com ÇÐµ½ GitHub
+REM ¹Ù·½µÄ ssh.github.com:443 Èë¿Ú¡£¿ÉÓÃ --no-git-ssh Ìø¹ý, --git-ssh-always Ç¿ÖÆÐ´¡£
+REM ÕâÀï¿ÌÒâÓÃ±êÇ©Ìø×ª¶ø²»ÊÇ if ¿é: cmd ½âÎöÀ¨ºÅ¿éÊ±, Í¬Ò»ÐÐÀï¼ÈÓÐÖÐÎÄÓÖÓÐ ASCII
+REM À¨ºÅ»á±» DBCS ½âÂë´íÎ»ÍÌµôÓÒÀ¨ºÅ(¼ûÉÏÃæ°²×° CA ÄÇ¶ÎµÄ´¦Àí)¡£
+echo [7/7] ÅäÖÃ Git µÄ GitHub SSH Èë¿Ú
 set "GIT_SSH_MODE=auto"
 for %%A in (%*) do (
   if /I "%%~A"=="--no-git-ssh" set "GIT_SSH_MODE=never"
@@ -173,62 +212,70 @@ if not exist "%SRC%tools\setup-git-ssh.ps1" goto gitssh_missing
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%tools\setup-git-ssh.ps1" -Mode %GIT_SSH_MODE%
 goto gitssh_done
 :gitssh_skip
-echo   å·²æŒ‰ --no-git-ssh è·³è¿‡
+echo   ÒÑ°´ --no-git-ssh Ìø¹ý
 goto gitssh_done
 :gitssh_missing
-echo   [è­¦å‘Š] æœªæ‰¾åˆ° tools\setup-git-ssh.ps1, è·³è¿‡ - ä¸å½±å“ä»£ç†æœ¬èº«
+echo   [¾¯¸æ] Î´ÕÒµ½ tools\setup-git-ssh.ps1, Ìø¹ý - ²»Ó°Ïì´úÀí±¾Éí
 goto gitssh_done
 :gitssh_done
 
 echo.
 echo ============================================
-echo   å®Œæˆ - è®¡åˆ’ä»»åŠ¡æ¨¡å¼: ç™»å½•åŽè‡ªå¯
-echo     ä»£ç†    : 127.0.0.1:%PORT%  HTTP + SOCKS5
-echo     é¢æ¿    : http://127.0.0.1:28898/
-echo     æŒ‡æ ‡/PAC: http://127.0.0.1:28898/status  ^|  /pac
-echo     æ—¥å¿—    : %DEST%\hublane.log
-echo     é…ç½®    : %DEST%\config.json
-echo     æ³¨é”€åŽä¹Ÿè¿è¡Œ: ä»¥ç®¡ç†å‘˜è¿è¡Œ install-windows-service.bat æ³¨å†Œä¸ºç³»ç»ŸæœåŠ¡
-echo     å¸è½½    : uninstall-windows.bat
+if "!SVC_MODE!"=="1" (
+  echo   Íê³É - ·þÎñÄ£Ê½: ¿ª»ú×ÔÆô, ×¢ÏúºóÈÔÔËÐÐ
+) else (
+  echo   Íê³É - ¼Æ»®ÈÎÎñÄ£Ê½: µÇÂ¼ºó×ÔÆô
+)
+echo     ´úÀí    : 127.0.0.1:%PORT%  HTTP + SOCKS5
+echo     Ãæ°å    : http://127.0.0.1:28898/
+echo     Ö¸±ê/PAC: http://127.0.0.1:28898/status  ^|  /pac
+echo     ÈÕÖ¾    : %DEST%\hublane.log
+echo     ÅäÖÃ    : %DEST%\config.json
+if "!SVC_MODE!"=="1" (
+  echo     ÇÐ»ØµÇÂ¼×ÔÆô: ÒÔ¹ÜÀíÔ±ÔËÐÐ uninstall-windows-service.bat
+) else (
+  echo     ×¢ÏúºóÒ²ÔËÐÐ: ÒÔ¹ÜÀíÔ±ÔËÐÐ install-windows-service.bat ×¢²áÎªÏµÍ³·þÎñ
+)
+echo     Ð¶ÔØ    : uninstall-windows.bat
 echo ============================================
 echo.
 
-REM ---------- 3.2: Firefox ç”¨è‡ªå·±çš„ä¿¡ä»»åº“, policies.json è‡ªåŠ¨å¯¼å…¥ ----------
-REM æ­¤å‰åª echo ä¸€å¥"è¯·æ‰‹åŠ¨å¯¼å…¥" â€”â€” è·¯çº¿å›¾é‡Œæ‰¿è¯ºçš„ policies.json ä»Žæœªå®žçŽ°
-REM (v0.2.0 ç¬¬ 1 æ¡)ã€‚JSON é‡Œåæ–œæ è¦è½¬ä¹‰æˆ \\ã€è¿˜è¦åˆå¹¶ç”¨æˆ·å·²æœ‰çš„ç­–ç•¥, åœ¨ cmd
-REM é‡Œæ‹¼æžæ˜“å‡ºé”™, æ‰€ä»¥é€»è¾‘æ”¾è¿› tools\setup-firefox-policy.ps1;
-REM æ‰¾ä¸åˆ°è¯¥è„šæœ¬(æ¯”å¦‚åªè§£åŽ‹äº†ç»¿è‰²åŒ…é‡Œçš„å‡ ä¸ªæ–‡ä»¶)æ—¶é€€å›žåŽŸæ¥çš„æ‰‹åŠ¨æç¤ºã€‚
+REM ---------- 3.2: Firefox ÓÃ×Ô¼ºµÄÐÅÈÎ¿â, policies.json ×Ô¶¯µ¼Èë ----------
+REM ´ËÇ°Ö» echo Ò»¾ä"ÇëÊÖ¶¯µ¼Èë" ¡ª¡ª Â·ÏßÍ¼Àï³ÐÅµµÄ policies.json ´ÓÎ´ÊµÏÖ
+REM (v0.2.0 µÚ 1 Ìõ)¡£JSON Àï·´Ð±¸ÜÒª×ªÒå³É \\¡¢»¹ÒªºÏ²¢ÓÃ»§ÒÑÓÐµÄ²ßÂÔ, ÔÚ cmd
+REM ÀïÆ´¼«Ò×³ö´í, ËùÒÔÂß¼­·Å½ø tools\setup-firefox-policy.ps1;
+REM ÕÒ²»µ½¸Ã½Å±¾(±ÈÈçÖ»½âÑ¹ÁËÂÌÉ«°üÀïµÄ¼¸¸öÎÄ¼þ)Ê±ÍË»ØÔ­À´µÄÊÖ¶¯ÌáÊ¾¡£
 if not exist "%SRC%tools\setup-firefox-policy.ps1" goto ff_nopolicy
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%tools\setup-firefox-policy.ps1" -CaPath "%DEST%\ca.crt"
 goto ff_done
 :ff_nopolicy
-echo   [æç¤º] æœªæ‰¾åˆ° tools\setup-firefox-policy.ps1, è·³è¿‡ Firefox ç­–ç•¥
+echo   [ÌáÊ¾] Î´ÕÒµ½ tools\setup-firefox-policy.ps1, Ìø¹ý Firefox ²ßÂÔ
 if exist "%ProgramFiles%\Mozilla Firefox\firefox.exe" (
-  echo          Firefox ä¸ä½¿ç”¨ç³»ç»Ÿè¯ä¹¦åº“, è¯·æ‰‹åŠ¨å¯¼å…¥ %DEST%\ca.crt
+  echo          Firefox ²»Ê¹ÓÃÏµÍ³Ö¤Êé¿â, ÇëÊÖ¶¯µ¼Èë %DEST%\ca.crt
 )
 :ff_done
 endlocal
 goto :eof
 
 :usage
-echo ç”¨æ³•: install-windows.bat [é€‰é¡¹]
+echo ÓÃ·¨: install-windows.bat [Ñ¡Ïî]
 echo.
-echo   --reset-config    ç”¨å‘è¡ŒåŒ…é‡Œçš„é»˜è®¤é…ç½®è¦†ç›–å·²æœ‰çš„ config.json
-echo   --renew-certs     éƒ¨ç½²åŽç»­æœŸå¶è¯ä¹¦, ä¿ç•™ CA, ç³»ç»Ÿä¿¡ä»»æ— éœ€é‡è£…
-echo   --renew-ca        è¿žåŒ CA ä¸€èµ·ç»­æœŸ, éšåŽé‡æ–°å®‰è£…ä¿¡ä»»
-echo   --no-git-ssh      ä¸æ”¹åŠ¨ Git å¯¹ GitHub çš„ SSH å…¥å£
-echo   --git-ssh-always  æ€»æ˜¯æŠŠ git@github.com åˆ‡åˆ° ssh.github.com:443
-echo   --help            æ˜¾ç¤ºæœ¬å¸®åŠ©
+echo   --reset-config    ÓÃ·¢ÐÐ°üÀïµÄÄ¬ÈÏÅäÖÃ¸²¸ÇÒÑÓÐµÄ config.json
+echo   --renew-certs     ²¿ÊðºóÐøÆÚÒ¶Ö¤Êé, ±£Áô CA, ÏµÍ³ÐÅÈÎÎÞÐèÖØ×°
+echo   --renew-ca        Á¬Í¬ CA Ò»ÆðÐøÆÚ, ËæºóÖØÐÂ°²×°ÐÅÈÎ
+echo   --no-git-ssh      ²»¸Ä¶¯ Git ¶Ô GitHub µÄ SSH Èë¿Ú
+echo   --git-ssh-always  ×ÜÊÇ°Ñ git@github.com ÇÐµ½ ssh.github.com:443
+echo   --help            ÏÔÊ¾±¾°ïÖú
 echo.
-echo é»˜è®¤è¡Œä¸º: ä¿ç•™ä½ çŽ°æœ‰çš„ config.json, æŠŠå‘è¡ŒåŒ…é‡Œçš„æ–°ç‰ˆå¦å­˜ä¸º config.json.new
+echo Ä¬ÈÏÐÐÎª: ±£ÁôÄãÏÖÓÐµÄ config.json, °Ñ·¢ÐÐ°üÀïµÄÐÂ°æÁí´æÎª config.json.new
 exit /b 0
 
-REM ---------- æœ¬åœ°ç”Ÿæˆ CA + å¶å­è¯ä¹¦ (ä¸å‘ä»“åº“æäº¤ä»»ä½•ç§é’¥) ----------
+REM ---------- ±¾µØÉú³É CA + Ò¶×ÓÖ¤Êé (²»Ïò²Ö¿âÌá½»ÈÎºÎË½Ô¿) ----------
 :gen_certs
 set "GD=%~1"
 if exist "%GD%\ca.crt" if exist "%GD%\ca.key" if exist "%GD%\server.crt" if exist "%GD%\server.key" exit /b 0
 
-REM æŸ¥æ‰¾ openssl (Git for Windows è‡ªå¸¦)
+REM ²éÕÒ openssl (Git for Windows ×Ô´ø)
 set "OPENSSL="
 for %%P in (
   "%LOCALAPPDATA%\Programs\Git\usr\bin\openssl.exe"
@@ -236,15 +283,15 @@ for %%P in (
   "C:\Program Files (x86)\Git\usr\bin\openssl.exe"
 ) do ( if exist %%~P ( set "OPENSSL=%%~P" & goto :openssl_found ) )
 where openssl >nul 2>nul && ( set "OPENSSL=openssl" & goto :openssl_found )
-echo   [é”™è¯¯] æœªæ‰¾åˆ° openssl, æ— æ³•ç”Ÿæˆæœ¬åœ° CA è¯ä¹¦
-echo         è¯·å®‰è£… Git for Windows æˆ– OpenSSL, ç„¶åŽé‡æ–°è¿è¡Œæœ¬è„šæœ¬
+echo   [´íÎó] Î´ÕÒµ½ openssl, ÎÞ·¨Éú³É±¾µØ CA Ö¤Êé
+echo         Çë°²×° Git for Windows »ò OpenSSL, È»ºóÖØÐÂÔËÐÐ±¾½Å±¾
 exit /b 1
 :openssl_found
-echo   ç”Ÿæˆæœ¬åœ° CA ä¸Žå¶å­è¯ä¹¦ (openssl)...
-REM CA å¿…é¡»æ˜¾å¼å¸¦ keyUsage: req -x509 çš„é»˜è®¤è¾“å‡ºæ²¡æœ‰å®ƒ, OpenSSL 3.5+ ä¼šæ‹’ç»æ ¡éªŒã€‚
-REM ç”¨ CSR + x509 -signkey è‡ªç­¾è€Œä¸æ˜¯ req -x509: req -x509 ä¸æŽ¥å— -extfile, åªèƒ½ç”¨
-REM -addext; è€Œ -addext åœ¨ PyInstaller å†»ç»“äº§ç‰©é‡Œè°ƒ openssl ä¼š SIGSEGV(å®žæµ‹)ã€‚
-REM ä¸Ž hublane.py / install.sh ä¿æŒä¸€è‡´(æµ‹è¯•ä¼šæ ¡éªŒä¸‰å¤„ä¸€è‡´)ã€‚
+echo   Éú³É±¾µØ CA ÓëÒ¶×ÓÖ¤Êé (openssl)...
+REM CA ±ØÐëÏÔÊ½´ø keyUsage: req -x509 µÄÄ¬ÈÏÊä³öÃ»ÓÐËü, OpenSSL 3.5+ »á¾Ü¾øÐ£Ñé¡£
+REM ÓÃ CSR + x509 -signkey ×ÔÇ©¶ø²»ÊÇ req -x509: req -x509 ²»½ÓÊÜ -extfile, Ö»ÄÜÓÃ
+REM -addext; ¶ø -addext ÔÚ PyInstaller ¶³½á²úÎïÀïµ÷ openssl »á SIGSEGV(Êµ²â)¡£
+REM Óë hublane.py / install.sh ±£³ÖÒ»ÖÂ(²âÊÔ»áÐ£ÑéÈý´¦Ò»ÖÂ)¡£
 >"%GD%\ca.ext" echo basicConstraints=critical,CA:TRUE
 >>"%GD%\ca.ext" echo keyUsage=critical,digitalSignature,keyCertSign,cRLSign
 >>"%GD%\ca.ext" echo subjectKeyIdentifier=hash

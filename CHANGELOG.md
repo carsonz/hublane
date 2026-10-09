@@ -2,6 +2,16 @@
 
 本文件记录 hublane 的每个发布版本，格式基于 [Keep a Changelog](https://keepachangelog.com/)。
 
+## [Unreleased]
+
+### Fixed
+
+- **`uninstall-windows-service.bat` 误报"服务仍在"**：原脚本用 `sc delete` 的
+  报错来判定服务是否存在，但服务**已删除**时 `sc delete` 返回 1060(不存在) 也被当成
+  "仍在"，每次卸载都误报警告；且服务进程未退出时 `sc delete` 只"标记删除"、条目不消失，
+  脚本也没杀进程。改为：先按 `sc queryex` 拿到的 PID 杀掉服务进程，再用 `sc query`
+  的存在性（而非 `sc delete` 的报错）来判定——不存在则提示"服务已删除(或本就不存在)"。
+
 **格式约定**
 
 - `## [版本号] - YYYY-MM-DD` —— 一个发布版本的段落，日期为该版本的发布日期；
@@ -76,6 +86,14 @@ Defender 无检出、`--service` 能进 SCM 分发器、`--renew-certs` 在冻�
 - **安装脚本里的 `timeout` 等待会落空**：stdin 不是控制台时（脚本调脚本、
   输出被重定向）`timeout` 直接报 `Input redirection is not supported` 退出，
   改用 `ping -n` 兜底。
+- **Windows 批处理（`.bat`）中文编码导致整段被当命令执行**：中文 Windows 默认
+  OEM 是 CP936，cmd 把**无 BOM 的 UTF-8 `.bat`** 当 GBK 解码，中文变乱码，乱码字节
+  里混进 `)` / `&` 把结构打碎，报一堆"不是内部或外部命令"（`install/uninstall` 的
+  service bat 实测炸过）。试过加 UTF-8 BOM，但 **cmd 不识别 BOM**，会把 `EF BB BF`
+  当成首行内容弄坏 `@echo off`（`锘匡豢@echo` 不是内部命令）。最终改成 **GBK(CP936)
+  无 BOM 编码** + 脚本内 `chcp 936`（而非 65001），与系统解码一致，中文 Windows 原生
+  读对；`tests/test_hublane.py` 新增断言 `.bat` 必须为 GBK 无 BOM、且不得用 65001，
+  防回归。
 - **发布门禁 flake8 复红**（`handle_client` / `main` 圈复杂度 16、测试文件
   4 处 E306），打 tag 会被 CI 拦住；分别抽出 `_parse_connect_target` /
   `_handle_connect` / `_run_cli_command` 后恢复 ≤15。

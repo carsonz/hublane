@@ -548,7 +548,8 @@ class TestCertSan(unittest.TestCase):
         want = set(H.leaf_san().split(","))
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for name in ("install.sh", "install-windows.bat"):
-            with open(os.path.join(root, name), encoding="utf-8") as fh:
+            with open(os.path.join(root, name),
+                      encoding=("gbk" if name.endswith(".bat") else "utf-8")) as fh:
                 found = set(re.findall(r"DNS:[A-Za-z0-9.*\-]+", fh.read()))
             missing = sorted(want - found)
             self.assertEqual(missing, [], "%s 缺少 SAN: %s" % (name, missing[:5]))
@@ -577,7 +578,8 @@ class TestCaExtensions(unittest.TestCase):
         """install.sh / install-windows.bat 不能落后于 hublane.py"""
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         for name in ("install.sh", "install-windows.bat"):
-            with open(os.path.join(root, name), encoding="utf-8") as fh:
+            with open(os.path.join(root, name),
+                      encoding=("gbk" if name.endswith(".bat") else "utf-8")) as fh:
                 text = fh.read()
             for ext in H.CA_EXTENSIONS:
                 self.assertIn(ext, text, "%s 缺少 CA 扩展: %s" % (name, ext))
@@ -1458,7 +1460,12 @@ class TestWindowsInstallParity(unittest.TestCase):
         cls.texts = {}
         for name in cls.SCRIPTS:
             with open(os.path.join(root, name), "rb") as fh:
-                cls.texts[name] = fh.read().decode("utf-8")
+                raw = fh.read()
+            # .bat 是 GBK(CP936) 无 BOM; .ps1 是 UTF-8 带 BOM —— 各自按真实编码解码
+            if name.endswith(".bat"):
+                cls.texts[name] = raw.decode("gbk")
+            else:
+                cls.texts[name] = raw.decode("utf-8-sig")
 
     def test_renew_passthrough_on_windows(self):
         """--renew-certs / --renew-ca 透传不能只做 Linux 侧"""
@@ -1479,7 +1486,7 @@ class TestWindowsInstallParity(unittest.TestCase):
                           "%s 没有接 Firefox policies.json" % name)
 
     def test_windows_scripts_are_crlf(self):
-        """.bat 存成 LF 时 cmd 解析括号块会出错; .gitattributes 管不到工作区文件"""
+        """.bat / .ps1 必须用 CRLF; LF 会让 cmd 解析括号块出错(.gitattributes 管不到工作区)"""
         bats = [n for n in self.SCRIPTS if n.endswith(".bat")]
         bats.append("tools/setup-firefox-policy.ps1")
         for name in bats:
@@ -1488,6 +1495,36 @@ class TestWindowsInstallParity(unittest.TestCase):
             self.assertIn(b"\r\n", raw, "%s 不是 CRLF" % name)
             self.assertNotIn(b"\n", raw.replace(b"\r\n", b""),
                              "%s 混入裸 LF" % name)
+
+    def test_windows_batch_are_gbk_no_bom(self):
+        """Windows 批处理中文编码坑(已在中文 Windows 实机复现):
+
+        - 不能 UTF-8 无 BOM: 中文 Windows 默认 OEM 是 CP936, cmd 把无 BOM 的
+          UTF-8 .bat 当 GBK 解码, 中文变乱码, 乱码字节里混进 ')'/'&' 把结构打碎,
+          报一堆"不是内部或外部命令"(install/uninstall 的 service bat 实测炸过)。
+        - 不能加 UTF-8 BOM: cmd 不识别 BOM, 会把 EF BB BF 当成首行内容弄坏
+          @echo off(表现为 '锘匡豢@echo' 不是内部命令)。
+        - 唯一稳妥: 文件本身存成 GBK(CP936) 无 BOM, 与系统解码一致; 且脚本里
+          chcp 用 936 而非 65001, 让控制台输出编码与文件一致。
+        """
+        for name in self.SCRIPTS:
+            if not name.endswith(".bat"):
+                continue
+            with open(os.path.join(self.root, name), "rb") as fh:
+                raw = fh.read()
+            # 绝不能带 UTF-8 BOM —— cmd 会把 BOM 当首行内容
+            self.assertNotIn(b"\xef\xbb\xbf", raw,
+                             "%s 不应有 UTF-8 BOM(cmd 会弄坏首行)" % name)
+            # 必须能被 CP936(GBK) 无损解码 —— 证明它本就是 GBK 编码
+            try:
+                text = raw.decode("gbk")
+            except UnicodeDecodeError:
+                self.fail("%s 不是合法 GBK 编码(中文 Windows 会读成乱码)" % name)
+            # 脚本内 chcp 必须是 936, 与 GBK 文件编码一致(不是 65001)
+            self.assertIn("chcp 936", text,
+                          "%s 应使用 chcp 936(与 GBK 文件编码一致)" % name)
+            self.assertNotIn("chcp 65001", text,
+                             "%s 不应使用 chcp 65001(与 GBK 文件编码冲突)" % name)
 
     def test_powershell_scripts_have_utf8_bom(self):
         """无 BOM 时 Windows PowerShell 5.1 按 ANSI 解码中文, 双字节序列可能

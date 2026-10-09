@@ -1,61 +1,62 @@
 @echo off
-chcp 65001 >nul
+REM ±¾ÎÄ¼şÒÔ GBK(936) ±£´æ¡¢ÇÒ²»´ø BOM, ÓëÏÂÃæ chcp 936 Æ¥Åä; Îğ¸Ä³É UTF-8(»áÂÒÂë/±¨´í)
+chcp 936 >nul
 setlocal enabledelayedexpansion
-title hublane æœåŠ¡æ¨¡å¼å®‰è£… (éœ€ç®¡ç†å‘˜)
+title hublane ·şÎñÄ£Ê½°²×° (Ğè¹ÜÀíÔ±)
 
 REM ============================================================
-REM  æŠŠ hublane æ³¨å†ŒæˆçœŸæ­£çš„ Windows æœåŠ¡:
-REM    - å¼€æœºå³è¿è¡Œ, ä¸ç™»å½•çŠ¶æ€æ— å…³(æ³¨é”€åä¾ç„¶å·¥ä½œ)
-REM    - å´©æºƒåç”± SCM è‡ªåŠ¨é‡å¯(sc failure)
-REM    - æ”¯æŒ sc stop / net stop ä¼˜é›…é€€å‡º
-REM  å‰ç½®æ¡ä»¶: å·²è¿è¡Œè¿‡ install-windows.bat (éƒ¨ç½² + è¯ä¹¦ + CA)
+REM  °Ñ hublane ×¢²á³ÉÕæÕıµÄ Windows ·şÎñ:
+REM    - ¿ª»ú¼´ÔËĞĞ, ÓëµÇÂ¼×´Ì¬ÎŞ¹Ø(×¢ÏúºóÒÀÈ»¹¤×÷)
+REM    - ±ÀÀ£ºóÓÉ SCM ×Ô¶¯ÖØÆô(sc failure)
+REM    - Ö§³Ö sc stop / net stop ÓÅÑÅÍË³ö
+REM  Ç°ÖÃÌõ¼ş: ÒÑÔËĞĞ¹ı install-windows.bat (²¿Êğ + Ö¤Êé + CA)
 REM ============================================================
 
 set "SRC=%~dp0"
 set "DEST=%LOCALAPPDATA%\hublane"
 set "SVC=hublane"
 set "PORT=8899"
-REM è®©å†…åµŒ Python ç”¨ UTF-8 è¯»å†™, å¦åˆ™ä¸­æ–‡è¾“å‡ºåœ¨ cmd é‡Œæ˜¯ä¹±ç 
+REM ÈÃÄÚÇ¶ Python ÓÃ UTF-8 ¶ÁĞ´, ·ñÔòÖĞÎÄÊä³öÔÚ cmd ÀïÊÇÂÒÂë
 set "PYTHONUTF8=1"
 
-REM ---------- 0. å…ˆçœ‹æ˜¯ä¸æ˜¯åªæ¥é—®ç”¨æ³•(ä¸éœ€è¦ç®¡ç†å‘˜) ----------
+REM ---------- 0. ÏÈ¿´ÊÇ²»ÊÇÖ»À´ÎÊÓÃ·¨(²»ĞèÒª¹ÜÀíÔ±) ----------
 for %%A in (%*) do (
   if /I "%%~A"=="--help" goto :usage
   if /I "%%~A"=="-h" goto :usage
 )
 
-REM ---------- 0b. ç®¡ç†å‘˜æ£€æŸ¥ ----------
+REM ---------- 0b. ¹ÜÀíÔ±¼ì²é ----------
 net session >nul 2>&1
 if errorlevel 1 (
-  echo [é”™è¯¯] éœ€è¦ç®¡ç†å‘˜æƒé™: è¯·å³é”®"ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œ"æœ¬è„šæœ¬ã€‚
-  echo        åŸå› : æ³¨å†Œç³»ç»ŸæœåŠ¡ sc create å¿…é¡»æå‡æƒé™ã€‚
+  echo [´íÎó] ĞèÒª¹ÜÀíÔ±È¨ÏŞ: ÇëÓÒ¼ü"ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ"±¾½Å±¾¡£
+  echo        Ô­Òò: ×¢²áÏµÍ³·şÎñ sc create ±ØĞëÌáÉıÈ¨ÏŞ¡£
   exit /b 1
 )
 
 echo ============================================
-echo   hublane æœåŠ¡æ¨¡å¼å®‰è£…
+echo   hublane ·şÎñÄ£Ê½°²×°
 echo ============================================
 echo.
 
-REM ---------- 1. æ£€æŸ¥éƒ¨ç½² ----------
+REM ---------- 1. ¼ì²é²¿Êğ ----------
 if not exist "%DEST%\hublane.py" (
-  echo [é”™è¯¯] æœªæ‰¾åˆ° %DEST%\hublane.py
-  echo        è¯·å…ˆè¿è¡Œ install-windows.bat å®Œæˆéƒ¨ç½²ä¸è¯ä¹¦ç”Ÿæˆã€‚
+  echo [´íÎó] Î´ÕÒµ½ %DEST%\hublane.py
+  echo        ÇëÏÈÔËĞĞ install-windows.bat Íê³É²¿ÊğÓëÖ¤ÊéÉú³É¡£
   exit /b 1
 )
 if not exist "%DEST%\server.crt" (
-  echo [é”™è¯¯] æœªæ‰¾åˆ° %DEST%\server.crt è¯ä¹¦ç¼ºå¤±
-  echo        è¯·å…ˆè¿è¡Œ install-windows.batã€‚
+  echo [´íÎó] Î´ÕÒµ½ %DEST%\server.crt Ö¤ÊéÈ±Ê§
+  echo        ÇëÏÈÔËĞĞ install-windows.bat¡£
   exit /b 1
 )
-echo [1/6] å®‰è£…ç›®å½•: %DEST%
+echo [1/6] °²×°Ä¿Â¼: %DEST%
 
-REM ---------- 2. è§£æ Python; æœåŠ¡ç”¨æ— æ§åˆ¶å°çš„ pythonw.exe ----------
+REM ---------- 2. ½âÎö Python; ·şÎñÓÃÎŞ¿ØÖÆÌ¨µÄ pythonw.exe ----------
 set "PYEXE="
 where py >nul 2>nul && set "PYEXE=py"
 if not defined PYEXE (where python >nul 2>nul && set "PYEXE=python")
 if not defined PYEXE (
-  echo [é”™è¯¯] æœªæ‰¾åˆ° Pythonã€‚è¯·å…ˆ winget install Python.Python.3.12
+  echo [´íÎó] Î´ÕÒµ½ Python¡£ÇëÏÈ winget install Python.Python.3.12
   exit /b 1
 )
 for /f "delims=" %%p in ('%PYEXE% -c "import sys;print(sys.executable)"') do set "PYEXE=%%p"
@@ -63,98 +64,151 @@ set "PYW=%PYEXE:python.exe=pythonw.exe%"
 if not exist "%PYW%" set "PYW=%PYEXE%"
 echo [2/6] Python: %PYW%
 
-REM ---------- 2b. v0.2.0 ç¬¬ 1 æ¡: é€ä¼  --renew-certs / --renew-ca ----------
-REM ä¸ install-windows.bat åŒæ¬¾: å¤ç”¨ hublane.py è‡ªå¸¦çš„ç»­æœŸå®ç°ã€‚
-REM --renew-ca æ¢äº† CA, å¿…é¡»é‡è£…ä¿¡ä»», å¦åˆ™æœåŠ¡èµ·æ¥åå®¢æˆ·ç«¯è¯ä¹¦æ ¡éªŒå…¨æŒ‚ã€‚
+REM ---------- 2b. v0.2.0 µÚ 1 Ìõ: Í¸´« --renew-certs / --renew-ca ----------
+REM Óë install-windows.bat Í¬¿î: ¸´ÓÃ hublane.py ×Ô´øµÄĞøÆÚÊµÏÖ¡£
+REM --renew-ca »»ÁË CA, ±ØĞëÖØ×°ĞÅÈÎ, ·ñÔò·şÎñÆğÀ´ºó¿Í»§¶ËÖ¤ÊéĞ£ÑéÈ«¹Ò¡£
 set "RENEW_FLAG="
 for %%A in (%*) do (
   if /I "%%~A"=="--renew-certs" set "RENEW_FLAG=--renew-certs"
   if /I "%%~A"=="--renew-ca" set "RENEW_FLAG=--renew-ca"
 )
 if not defined RENEW_FLAG goto renew_done
-echo [2.5/6] æŒ‰ %RENEW_FLAG% ç»­æœŸè¯ä¹¦
+echo [2.5/6] °´ %RENEW_FLAG% ĞøÆÚÖ¤Êé
 "%PYEXE%" "%DEST%\hublane.py" --config "%DEST%\config.json" %RENEW_FLAG%
 if errorlevel 1 goto renew_fail
 if not "%RENEW_FLAG%"=="--renew-ca" goto renew_done
-echo   CA å·²æ›´æ¢, é‡æ–°å®‰è£…ä¿¡ä»»
+echo   CA ÒÑ¸ü»», ÖØĞÂ°²×°ĞÅÈÎ
 certutil -addstore -user -f Root "%DEST%\ca.crt" >nul 2>&1
 if errorlevel 1 certutil -addstore -f Root "%DEST%\ca.crt" >nul 2>&1
 goto renew_done
 :renew_fail
-echo   [é”™è¯¯] è¯ä¹¦ç»­æœŸå¤±è´¥, è¯·æŸ¥çœ‹ä¸Šé¢çš„è¾“å‡º
+echo   [´íÎó] Ö¤ÊéĞøÆÚÊ§°Ü, Çë²é¿´ÉÏÃæµÄÊä³ö
 exit /b 1
 :renew_done
 
-REM ---------- 3. ç§»é™¤ç™»å½•è‡ªå¯(é¿å…ä¸æœåŠ¡é‡å¤) ----------
-echo [3/6] ç§»é™¤è®¡åˆ’ä»»åŠ¡ / Run é¡¹, æ”¹ä¸ºæœåŠ¡è‡ªå¯
+REM ---------- 3. ÒÆ³ıµÇÂ¼×ÔÆô(±ÜÃâÓë·şÎñÖØ¸´) ----------
+echo [3/6] ÒÆ³ı¼Æ»®ÈÎÎñ / Run Ïî, ¸ÄÎª·şÎñ×ÔÆô
 schtasks /end    /tn %SVC% >nul 2>&1
 schtasks /delete /tn %SVC% /f >nul 2>&1
 reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v %SVC% /f >nul 2>&1
 reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Run" /v %SVC% /f >nul 2>&1
-REM schtasks /end åªç»“æŸä»»åŠ¡æœ¬èº«, run-loop.bat æ‹‰èµ·çš„ python.exe æ˜¯å®ƒçš„å­è¿›ç¨‹ã€‚
-REM å…³é”®: run-loop.bat æ˜¯ä¸ª goto loop æ­»å¾ªç¯ â€”â€” åªæ€ python.exe æ²¡ç”¨, ç›‘ç®¡å®ƒçš„
-REM cmd.exe ä¼šåœ¨ 3 ç§’åæŠŠ python.exe å†æ‹‰èµ·æ¥ã€‚æ‰€ä»¥å…ˆæŒ‰å‘½ä»¤è¡Œæ€æ‰æ•´ä¸ª run-loop
-REM è¿›ç¨‹æ ‘, å†æŒ‰ç«¯å£å…œåº•ã€‚æ¼æ‰è¿™ä¸€æ­¥çš„åæœ: Windows ä¸Š SO_REUSEADDR å…è®¸ä¸¤ä¸ª
-REM å¥—æ¥å­—ç»‘åŒä¸€ç«¯å£, æœåŠ¡ä¸"å½±å­å®ä¾‹"å¹¶å­˜, è¯·æ±‚è¢«ä¸¤ä¸ªè¿›ç¨‹åˆ†èµ°, sc stop ä¹‹å
-REM ç«¯å£çœ‹èµ·æ¥ä¸€ç›´"æ²¡é‡Šæ”¾"ã€‚
+
+REM ¹Ø¼üË³Ğò: ±ØĞëÏÈÇå¿Õ·şÎñµÄ"±ÀÀ£×Ô¶¯ÖØÆô"¶¯×÷, ÔÙÉ±½ø³Ì¡£
+REM ±¾½Å±¾ [5/6] »áÅä sc failure ... restart/3000, ÓÚÊÇ"É±µô·şÎñ½ø³Ì"»á±» SCM
+REM ÅĞ¶¨Îª±ÀÀ£²¢ÔÚ 3 Ãëºó×Ô¶¯À­Æğ -> ·şÎñÒ»Ö±Í£ÔÚ RUNNING, sc delete Ö»ÄÜ±ê¼Ç
+REM É¾³ı(ÌõÄ¿±»ÖÃÎª DISABLED µ«ÈÔ´æÔÚ), ½ô½Ó×ÅµÄ sc create ±ØÈ»±¨
+REM   [SC] CreateService FAILED 1073: Ö¸¶¨µÄ·ş„ÕÒÑ´æÔÚ¡£
+REM Õâ¾ÍÊÇÖØ×°·şÎñÊ±×î³£¼ûµÄ"sc create Ê§°Ü"¡£ÕıÈ·Ë³Ğò:
+REM   Çå¿Õ failure ¶¯×÷ -> Í£·şÎñ -> µÈÕæ STOPPED -> É¾³ı -> µÈÌõÄ¿ÏûÊ§ -> ÔÙ´´½¨¡£
+sc query %SVC% >nul 2>&1
+if not errorlevel 1 (
+  echo   ÏÈÍ£ÓÃ·şÎñµÄ±ÀÀ£×Ô¶¯ÖØÆô, ±ÜÃâÉ¾³ıÊ±±» SCM ×Ô¶¯À­Æğ
+  sc failure %SVC% reset= 0 actions= "" >nul 2>&1
+)
+
+REM schtasks /end Ö»½áÊøÈÎÎñ±¾Éí, run-loop.bat À­ÆğµÄ python.exe ÊÇËüµÄ×Ó½ø³Ì¡£
+REM ¹Ø¼ü: run-loop.bat ÊÇ¸ö goto loop ËÀÑ­»· ¡ª¡ª Ö»É± python.exe Ã»ÓÃ, ¼à¹ÜËüµÄ
+REM cmd.exe »áÔÚ 3 Ãëºó°Ñ python.exe ÔÙÀ­ÆğÀ´¡£ËùÒÔÏÈ°´ÃüÁîĞĞÉ±µôÕû¸ö run-loop
+REM ½ø³ÌÊ÷, ÔÙ°´¶Ë¿Ú¶µµ×¡£Â©µôÕâÒ»²½µÄºó¹û: Windows ÉÏ SO_REUSEADDR ÔÊĞíÁ½¸ö
+REM Ì×½Ó×Ö°óÍ¬Ò»¶Ë¿Ú, ·şÎñÓë"Ó°×ÓÊµÀı"²¢´æ, ÇëÇó±»Á½¸ö½ø³Ì·Ö×ß, sc stop Ö®ºó
+REM ¶Ë¿Ú¿´ÆğÀ´Ò»Ö±"Ã»ÊÍ·Å"¡£
 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*run-loop*' -or $_.CommandLine -like '*hublane.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":8899" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
 for /f "tokens=5" %%p in ('netstat -ano ^| findstr ":28898" ^| findstr "LISTENING"') do taskkill /F /PID %%p >nul 2>&1
-REM ç­‰å¾…ä¸€å¾‹ç”¨ ping è€Œä¸æ˜¯ timeout: timeout åœ¨ stdin ä¸æ˜¯æ§åˆ¶å°æ—¶
-REM (è„šæœ¬é‡Œè°ƒè„šæœ¬/è¾“å‡ºè¢«é‡å®šå‘)ç›´æ¥æŠ¥é”™é€€å‡º, ç­‰å¾…è½ç©º(Windows å®æµ‹)ã€‚
+REM µÈ´ıÒ»ÂÉÓÃ ping ¶ø²»ÊÇ timeout: timeout ÔÚ stdin ²»ÊÇ¿ØÖÆÌ¨Ê±
+REM (½Å±¾Àïµ÷½Å±¾/Êä³ö±»ÖØ¶¨Ïò)Ö±½Ó±¨´íÍË³ö, µÈ´ıÂä¿Õ(Windows Êµ²â)¡£
 ping -n 3 127.0.0.1 >nul
 
-REM ---------- 4. åˆ›å»ºæœåŠ¡ ----------
-echo [4/6] åˆ›å»ºæœåŠ¡ %SVC%
+REM ---------- 4. ´´½¨·şÎñ ----------
+echo [4/6] ´´½¨·şÎñ %SVC%
 sc query %SVC% >nul 2>&1
 if not errorlevel 1 (
-  echo   å·²å­˜åœ¨åŒåæœåŠ¡, å…ˆåœæ­¢å¹¶åˆ é™¤
+  echo   ÒÑ´æÔÚÍ¬Ãû·şÎñ, ÏÈÍ£Ö¹²¢É¾³ı
+  sc failure %SVC% reset= 0 actions= "" >nul 2>&1
   sc stop %SVC% >nul 2>&1
-  ping -n 3 127.0.0.1 >nul
+  REM ÂÖÑ¯Ö±µ½ÕæµÄ STOPPED¡£sc stop Á¢¿Ì·µ»ØÊ±·şÎñ¿ÉÄÜ»¹ÔÚ STOP_PENDING;
+  REM ¶øÖ»ÒªËü»¹ÔÚÔËĞĞ, sc delete ¾ÍÖ»ÊÇ"±ê¼ÇÉ¾³ı", ÌõÄ¿²»»áÏûÊ§¡£
+  set "SVC_STOPPED="
+  for /l %%i in (1,1,30) do (
+    if not defined SVC_STOPPED (
+      sc query %SVC% 2>nul | findstr /i "STOPPED" >nul
+      if not errorlevel 1 (set "SVC_STOPPED=1") else (ping -n 2 127.0.0.1 >nul)
+    )
+  )
+  if not defined SVC_STOPPED echo   [¾¯¸æ] ·şÎñÎ´ÄÜ½øÈë STOPPED, ÈÔ¼ÌĞø³¢ÊÔÉ¾³ı
   sc delete %SVC% >nul 2>&1
-  ping -n 2 127.0.0.1 >nul
+  REM ÂÖÑ¯Ö±µ½ÌõÄ¿³¹µ×ÏûÊ§, ·ñÔò sc create »á±¨ 1073
+  set "SVC_GONE="
+  for /l %%i in (1,1,30) do (
+    if not defined SVC_GONE (
+      sc query %SVC% >nul 2>&1
+      if errorlevel 1 (set "SVC_GONE=1") else (ping -n 2 127.0.0.1 >nul)
+    )
+  )
+  if not defined SVC_GONE (
+    echo   [´íÎó] ¾É·şÎñÌõÄ¿É¾²»µô, ºóÃæ sc create Ò»¶¨»áÊ§°Ü¡£
+    echo          ÇëÒÔ¹ÜÀíÔ±Éí·İÖ´ĞĞ:  sc stop %SVC%  È»ºó  sc delete %SVC%
+    exit /b 1
+  )
+  echo   ¾É·şÎñÒÑ³¹µ×É¾³ı
 )
+REM ¹ÊÒâ²»ÆÁ±ÎÊä³ö: ÒÔÇ° >nul °Ñ sc µÄÔ­Ê¼±¨´íÍÌÁË, Ö»ÄÜ¿¿²Â
 sc create %SVC% binPath= "\"%PYW%\" \"%DEST%\hublane.py\" --service --config \"%DEST%\config.json\"" ^
-   start= auto DisplayName= "hublane relay proxy" >nul
+   start= auto DisplayName= "hublane relay proxy"
 if errorlevel 1 (
-  echo   [é”™è¯¯] sc create å¤±è´¥ã€‚å¯å°è¯•ç”¨ NSSM:
+  echo   [´íÎó] sc create Ê§°Ü(ÉÏÃæÊÇ sc µÄÔ­Ê¼±¨´í^)
+  echo          1073 = Í¬Ãû·şÎñÌõÄ¿ÈÔ´æÔÚ(¾É·şÎñÃ»É¾¸É¾», ¼ûÉÏÃæ [4/6^] µÄÉ¾³ı²½Öè^)
+  echo          5= ¾Ü¾ø·ÃÎÊ(µ±Ç°»á»°²»ÊÇ¹ÜÀíÔ±, ÇëÓÒ¼ü"ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ"^)
+  echo   ¿É³¢ÊÔÓÃ NSSM:
   echo          nssm install %SVC% "%PYW%" "%DEST%\hublane.py --service --config %DEST%\config.json"
   echo          nssm set %SVC% AppDirectory "%DEST%" ^&^& nssm set %SVC% Start SERVICE_AUTO_START
   exit /b 1
 )
-sc description %SVC% "hublane: æœ¬åœ°ä¸­ç»§ä»£ç†, è®© GitHub åœ¨å—é™ç½‘ç»œä¸‹å¯è¾¾(HTTP+SOCKS5 127.0.0.1:%PORT%)" >nul 2>&1
+echo   ·şÎñÒÑ´´½¨, Æô¶¯ÀàĞÍ = ×Ô¶¯
+sc description %SVC% "hublane: ±¾µØÖĞ¼Ì´úÀí, ÈÃ GitHub ÔÚÊÜÏŞÍøÂçÏÂ¿É´ï(HTTP+SOCKS5 127.0.0.1:%PORT%)" >nul 2>&1
+if errorlevel 1 echo   [ÌáÊ¾] ·şÎñÃèÊöÉèÖÃÊ§°Ü(²»Ó°Ïì¹¦ÄÜ, ¿ÉºöÂÔ)
 
-REM ---------- 5. å´©æºƒè‡ªæ„ˆ ----------
-echo [5/6] é…ç½®å´©æºƒè‡ªåŠ¨é‡å¯, sc failure
+REM ---------- 5. ±ÀÀ£×ÔÓú ----------
+REM ÒÔÇ°ÕâÀïÖ»ÓĞÒ»ĞĞ echo, ÕæÕıµÄ sc failure Êä³ö±» >nul ÍÌµôÇÒ´Ó²»¼ì²é errorlevel,
+REM ÓÚÊÇ³É¹¦Ê§°Ü¿´²»³öÀ´ ¡ª¡ª ÓÃ»§Ö»ÄÜ¿´µ½"[5/6] ÅäÖÃ±ÀÀ£×ÔÓú"È´²»ÖªµÀµ½µ×ÓĞÃ»ÓĞÉúĞ§¡£
+REM ÏÖÔÚÏÔÊ½»Ø±¨½á¹û, ²¢°ÑÊµ¼Ê²ßÂÔ»ØÏÔ³öÀ´¡£
+echo [5/6] ÅäÖÃ±ÀÀ£×Ô¶¯ÖØÆô, sc failure
 sc failure %SVC% reset= 86400 actions= restart/3000/restart/3000/restart/3000 >nul 2>&1
+if errorlevel 1 (
+  echo   [¾¯¸æ] sc failure Î´ÉúĞ§: ·şÎñ±ÀÀ£ºó²»»á×Ô¶¯ÖØÆô, ĞèÊÖ¶¯ net start hublane
+) else (
+  echo   ÒÑÉúĞ§: ±ÀÀ£ºó×Ô¶¯ÖØÆô 3 ´Î, Ã¿´Î¼ä¸ô 3 Ãë^(24 Ğ¡Ê±ÄÚ¼ÆÊı, ³¬³öÔòÖØÖÃ^)
+  sc qfailure %SVC% | findstr /i /c:"RESTART" >nul
+  if errorlevel 1 echo   [ÌáÊ¾] »Ø¶Á²ßÂÔÎ´¿´µ½ RESTART, ½¨ÒéÊÖ¶¯Ö´ĞĞ: sc qfailure %SVC%
+)
 
-REM ---------- 6. å¯åŠ¨ ----------
-echo [6/6] å¯åŠ¨æœåŠ¡
+REM ---------- 6. Æô¶¯ ----------
+echo [6/6] Æô¶¯·şÎñ
 sc start %SVC% >nul
 if errorlevel 1 (
-  echo   [è­¦å‘Š] å¯åŠ¨å¤±è´¥, è¯·æŸ¥çœ‹äº‹ä»¶æŸ¥çœ‹å™¨æˆ– %DEST%\hublane.log
+  echo   [¾¯¸æ] Æô¶¯Ê§°Ü, Çë²é¿´ÊÂ¼ş²é¿´Æ÷»ò %DEST%\hublane.log
 ) else (
   ping -n 4 127.0.0.1 >nul
   sc query %SVC% | findstr /i "RUNNING" >nul
   if errorlevel 1 (
-    echo   [è­¦å‘Š] æœåŠ¡æœªå¤„äº RUNNING, è¯·æ£€æŸ¥ %DEST%\hublane.log
+    echo   [¾¯¸æ] ·şÎñÎ´´¦ÓÚ RUNNING, Çë¼ì²é %DEST%\hublane.log
   ) else (
-    echo   RUNNING
+    echo   ÒÑÆô¶¯, ·şÎñ´¦ÓÚ RUNNING ×´Ì¬
   )
 )
 
 echo.
 echo ============================================
-echo   å®Œæˆ - æœåŠ¡æ¨¡å¼: å¼€æœºè‡ªå¯, æ³¨é”€åä»è¿è¡Œ
-echo     çŠ¶æ€  : sc query %SVC%     ^|  net stop %SVC%
-echo     ä»£ç†  : 127.0.0.1:%PORT%  HTTP + SOCKS5
-echo     é¢æ¿  : http://127.0.0.1:28898/
-echo     æ—¥å¿—  : %DEST%\hublane.log
-echo     å¸è½½  : ä»¥ç®¡ç†å‘˜èº«ä»½è¿è¡Œ uninstall-windows-service.bat
+echo   Íê³É - ·şÎñÄ£Ê½: ¿ª»ú×ÔÆô, ×¢ÏúºóÈÔÔËĞĞ
+echo     ×´Ì¬  : sc query %SVC%     ^|  net stop %SVC%
+echo     ´úÀí  : 127.0.0.1:%PORT%  HTTP + SOCKS5
+echo     Ãæ°å  : http://127.0.0.1:28898/
+echo     ÈÕÖ¾  : %DEST%\hublane.log
+echo     Ğ¶ÔØ  : ÒÔ¹ÜÀíÔ±Éí·İÔËĞĞ uninstall-windows-service.bat
 echo ============================================
 
-REM ---------- 3.2: Firefox ç”¨è‡ªå·±çš„ä¿¡ä»»åº“, policies.json è‡ªåŠ¨å¯¼å…¥ ----------
-REM ä¸ install-windows.bat åŒæ¬¾(v0.2.0 ç¬¬ 1 æ¡); åªåœ¨æœ¬æœºè£…äº† Firefox æ—¶æ‰åŠ¨ä½œã€‚
+REM ---------- 3.2: Firefox ÓÃ×Ô¼ºµÄĞÅÈÎ¿â, policies.json ×Ô¶¯µ¼Èë ----------
+REM Óë install-windows.bat Í¬¿î(v0.2.0 µÚ 1 Ìõ); Ö»ÔÚ±¾»ú×°ÁË Firefox Ê±²Å¶¯×÷¡£
 if not exist "%SRC%tools\setup-firefox-policy.ps1" goto ff_done
 powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%tools\setup-firefox-policy.ps1" -CaPath "%DEST%\ca.crt"
 :ff_done
@@ -162,11 +216,11 @@ endlocal
 goto :eof
 
 :usage
-echo ç”¨æ³•: install-windows-service.bat [é€‰é¡¹]   ^(éœ€ç®¡ç†å‘˜^)
+echo ÓÃ·¨: install-windows-service.bat [Ñ¡Ïî]   ^(Ğè¹ÜÀíÔ±^)
 echo.
-echo   --renew-certs    æ³¨å†ŒæœåŠ¡å‰ç»­æœŸå¶è¯ä¹¦, ä¿ç•™ CA, ç³»ç»Ÿä¿¡ä»»æ— éœ€é‡è£…
-echo   --renew-ca       è¿åŒ CA ä¸€èµ·ç»­æœŸ, éšåé‡æ–°å®‰è£…ä¿¡ä»»
-echo   --help           æ˜¾ç¤ºæœ¬å¸®åŠ©
+echo   --renew-certs    ×¢²á·şÎñÇ°ĞøÆÚÒ¶Ö¤Êé, ±£Áô CA, ÏµÍ³ĞÅÈÎÎŞĞèÖØ×°
+echo   --renew-ca       Á¬Í¬ CA Ò»ÆğĞøÆÚ, ËæºóÖØĞÂ°²×°ĞÅÈÎ
+echo   --help           ÏÔÊ¾±¾°ïÖú
 echo.
-echo å‰ç½®: å·²è¿è¡Œè¿‡ install-windows.bat å®Œæˆéƒ¨ç½²ä¸è¯ä¹¦ç”Ÿæˆ
+echo Ç°ÖÃ: ÒÑÔËĞĞ¹ı install-windows.bat Íê³É²¿ÊğÓëÖ¤ÊéÉú³É
 exit /b 0

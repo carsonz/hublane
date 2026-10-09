@@ -134,11 +134,27 @@ Write-Host '    已追加(原有内容未改动)'
 
 if (Get-Command ssh -ErrorAction SilentlyContinue) {
     Write-Host '    验证(需已把 SSH 公钥加到 GitHub):'
+    # 注意: GitHub 的 `ssh -T` 即使认证成功也会以退出码 1 结束(不提供 shell),
+    # 不能只看退出码; 且 $ErrorActionPreference='Stop' 会把非零退出码当异常抛出,
+    # 导致把 "Permanently added ... to known_hosts" 这种正常提示误报成"验证未通过"。
+    # 这里临时放宽 ErrorActionPreference, 改为解析输出文本来判断成败。
+    $prevPref = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         $out = & ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -T git@github.com 2>&1
-        $out | Select-Object -First 2 | ForEach-Object { Write-Host "      $_" }
+        $out | Select-Object -First 4 | ForEach-Object { Write-Host "      $_" }
+        $text = $out | Out-String
+        if ($text -match 'successfully authenticated') {
+            Write-Host '      验证通过: GitHub 已接受你的 SSH 公钥。'
+        } elseif ($text -match 'denied|refused|timed out|Could not resolve|Connection closed') {
+            Write-Host '      验证未通过: 公钥可能还没加到 GitHub, 或网络仍连不通。'
+        } else {
+            Write-Host '      已执行验证(上面是 ssh 输出), 请自行判断结果。'
+        }
     } catch {
         Write-Host "      验证未通过: $_"
+    } finally {
+        $ErrorActionPreference = $prevPref
     }
 } else {
     Write-Host '    未找到 ssh 命令, 请自行验证: ssh -T git@github.com'

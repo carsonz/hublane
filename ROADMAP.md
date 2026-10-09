@@ -346,9 +346,13 @@ ps1 缺 BOM / timeout 落空），全部修复。
     `%ProgramFiles%\Mozilla Firefox\distribution\policies.json`，合并已有策略、
     无 Firefox 自动跳过、缺管理员权限时明确提示）。
   - 实测：干跑装置（系统命令换成 exe 桩、`LOCALAPPDATA` 指向沙箱）跑通全部
-    7 步 + `[2.5/7]` 续期两档 + 完成横幅，cmd 下无"中文 + ASCII 括号"解析错；
-    本机未装 Firefox，验证了正确跳过分支；`--help` 在非管理员会话可用。
-    真实写 Program Files / certutil 的分支需管理员会话复核。
+    7 步 + `[2.5/7]` 续期两档 + 完成横幅，cmd 下中文解析正常；本机未装 Firefox，
+    验证了正确跳过分支；`--help` 在非管理员会话可用。真实写 Program Files / certutil
+    的分支需管理员会话复核。
+  - 注：原先担心的"中文 + ASCII 括号破坏块解析"实际根因是**编码**——中文 Windows
+    默认 OEM 是 CP936，无 BOM 的 UTF-8 `.bat` 被当 GBK 解码、中文变乱码把结构打碎，
+    报一堆"不是内部或外部命令"；试加 UTF-8 BOM 反而弄坏 `@echo off`（cmd 不识 BOM）。
+    已统一改为 **GBK(CP936) 无 BOM 编码 + `chcp 936`**，并加测试断言防退化。
 - [x] **3. 面板三项 + 暂停/恢复的浏览器实测**
   - Edge（Chromium）无头渲染 + CDP 驱动点击，8 项断言全过：无 JS 错误、
     列头排序升/降序且表头不动、URL 工具生成 curl/git clone、暂停后
