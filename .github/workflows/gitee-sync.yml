@@ -57,8 +57,13 @@ jobs:
         run: |
           git config --global user.email "bot@hublane.local"
           git config --global user.name "hublane-sync"
+          # 不要用 --mirror: workflow 是 detached HEAD 检出, 本地没有 refs/heads/main,
+          # --mirror 会去删除 Gitee 上当前的 main 分支, 被拒后整个 push 失败(实测)。
+          # 只显式推 main + 全量 tag, 绝不删除任何远端分支。
+          # (Gitee 若是镜像仓库会自行同步代码, 推不推都不影响; 推失败也不阻塞建 release)
           git remote add gitee "https://oauth2:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
-          git push gitee --mirror
+          git push gitee "HEAD:refs/heads/main" || echo "push main 失败(可能 Gitee 已镜像同步), 继续"
+          git push gitee --tags || echo "push tags 失败, 继续"
 
       - name: 下载 GitHub Release 附件
         env:
@@ -79,10 +84,14 @@ jobs:
           # 创建 release（已存在则忽略报错）；把返回体打出来，否则 Gitee 只回一句
           # 非 JSON 的报错时无从下手（v0.2.0 首次实跑就是这样挂的）。
           echo "--- 创建 Gitee release ---"
-          curl -s -X POST "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases" \
+          # -w 把 HTTP 状态码打出来: 空体 + 401 = token 对 API 不认;
+          # 422 = tag/分支问题; 403 = 镜像仓库禁止 API 写。否则无从下手。
+          curl -s -w "\nHTTP_STATUS=%{http_code}\n" -X POST \
+            "https://gitee.com/api/v5/repos/${GITEE_REPO}/releases" \
             -H "Authorization: token ${GITEE_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":${JSON_BODY},\"prerelease\":false}" || true
+            -d "{\"tag_name\":\"${TAG}\",\"name\":\"${TAG}\",\"body\":${JSON_BODY},\"target_commitish\":\"main\",\"prerelease\":false}" \
+            2>&1 || true
           echo ""
           # 取 release id。curl 可能返回非 JSON(401 页面/空), 直接 json.load 会抛异常,
           # 而 GitHub 的 run 是 bash -e: 一抛就整步中断, 连错误提示都打不出来
