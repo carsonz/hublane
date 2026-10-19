@@ -64,7 +64,7 @@
   "refresh_interval": 300,
   "probe_enabled": true,
   "probe_delay": 10,
-  "probe_interval": 0,
+  "probe_interval": 14400,
   "probe_extra_max": 3,
   "cert_expire_warn_days": 90,
   "direct_timeout": 6,

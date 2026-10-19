@@ -792,6 +792,79 @@ class TestProbeSpecs(unittest.TestCase):
         self.assertEqual(H.probe_specs(), [])
 
 
+class TestProbeThrottle(unittest.TestCase):
+    """公共镜像限流保护: 探测不能太勤, 被限流要长退避
+
+    实测背景: gh-proxy / jsdelivr 这类站点是公益/免费服务, 同一个 IP 高频探测
+    会被回 429/403, 之后连正常请求一起废掉 —— 省下的探测成本远低于被封的代价。
+    """
+
+    def setUp(self):
+        H.CONFIG.clear()
+        H.CONFIG.update(H.DEFAULTS)
+        H._ustat.clear()
+        self._orig_ts = H._last_probe_ts
+
+    def tearDown(self):
+        H._last_probe_ts = self._orig_ts
+        H._ustat.clear()
+
+    def test_default_follows_refresh_interval_but_with_hourly_floor(self):
+        H.CONFIG["probe_interval"] = 0
+        H.CONFIG["refresh_interval"] = 300          # 5 分钟: 直接拿来探镜像太勤
+        got = H.probe_interval_seconds()
+        self.assertGreaterEqual(got, int(H.PROBE_MIN_INTERVAL * 0.9))
+        self.assertLessEqual(got, int(H.PROBE_MIN_INTERVAL * 1.1) + 1)
+
+    def test_larger_refresh_interval_is_respected(self):
+        H.CONFIG["probe_interval"] = 0
+        H.CONFIG["refresh_interval"] = 7200
+        got = H.probe_interval_seconds()
+        self.assertGreaterEqual(got, int(7200 * 0.9))
+        self.assertLessEqual(got, int(7200 * 1.1) + 1)
+
+    def test_explicit_small_interval_is_not_jittered(self):
+        """测试与实验环境会配 1~2 秒, 不能被抖动或下限改掉"""
+        H.CONFIG["probe_interval"] = 2
+        self.assertEqual(H.probe_interval_seconds(), 2)
+
+    def test_rate_limit_reply_is_recognised(self):
+        self.assertTrue(H._probe_rate_limited(RuntimeError("HTTP 429")))
+        self.assertTrue(H._probe_rate_limited(RuntimeError("HTTP 403")))
+        self.assertFalse(H._probe_rate_limited(RuntimeError("HTTP 500")))
+        self.assertFalse(H._probe_rate_limited(RuntimeError("timed out")))
+
+    def test_rate_limit_enters_long_cooldown_immediately(self):
+        H._u_fail("raw", "ghproxy_com", cooldown=H.PROBE_RATE_LIMIT_COOLDOWN,
+                  immediate=True)
+        self.assertTrue(H._u_cooling("raw", "ghproxy_com"))
+        with H._ustat_lock:
+            left = H._ustat[H._u_key("raw", "ghproxy_com")]["cool_until"] - time.time()
+        self.assertGreater(left, H.PROBE_RATE_LIMIT_COOLDOWN - 60)
+
+    def test_healthy_upstream_is_not_cooling(self):
+        H._u_ok("raw", "ghproxy_com", 0.8)
+        self.assertFalse(H._u_cooling("raw", "ghproxy_com"))
+        self.assertFalse(H._u_cooling("raw", "never-probed"))
+
+    def test_manual_round_skipped_when_too_soon(self):
+        """面板连点刷新不该变成对镜像的压测: 5 分钟内只验真、不再探测"""
+        H._last_probe_ts = time.time()
+        self.assertFalse(H.probe_gap_ok())
+        self.assertFalse(H._probe_round(manual=True))
+
+    def test_manual_round_allowed_after_gap(self):
+        H._last_probe_ts = time.time() - H.PROBE_MANUAL_MIN_GAP - 1
+        self.assertTrue(H.probe_gap_ok())
+        H.CONFIG["probe_enabled"] = False          # 不真的发请求
+        original = H.save_state                    # 别把测试状态写进 state.json
+        H.save_state = lambda: None
+        try:
+            self.assertTrue(H._probe_round(manual=True))
+        finally:
+            H.save_state = original
+
+
 class TestConnLimits(unittest.TestCase):
     """1.1 客户端连接治理: 并发上限(每个监听实例一个限流器)"""
 

@@ -29,6 +29,7 @@ import html
 import json
 import logging
 import os
+import random
 import select
 import shlex
 import shutil
@@ -235,7 +236,9 @@ DEFAULTS = {
     # 1.5: 主动探测(raw 镜像 + github 链 + extra 站点), 让每条链都有冷启动数据
     "probe_enabled": True,
     "probe_delay": 10,                # 启动后多久跑第一轮
-    "probe_interval": 0,              # 0 = 跟随 refresh_interval(最小 120s)
+    # 0 = 跟随 refresh_interval, 且下限 1 小时 —— 公共镜像是公益服务,
+    # 探太勤会被限流甚至封 IP(见 PROBE_MIN_INTERVAL 处的说明)
+    "probe_interval": 0,
     "probe_extra_max": 3,             # 每轮最多探测几个 extra 站点(按配置顺序)
     # 1.4: 证书生命周期(剩余天数低于该值启动告警, 可用 --renew-certs 续期)
     "cert_expire_warn_days": 90,
@@ -779,14 +782,18 @@ def _u_ok(scope, name, elapsed):
         _hist_add(s, True)
 
 
-def _u_fail(scope, name, cooldown=None):
-    """cooldown: 连续失败达到 direct_fail_max 后使用的长冷却(如 direct_cooldown)"""
+def _u_fail(scope, name, cooldown=None, immediate=False):
+    """cooldown: 连续失败达到 direct_fail_max 后使用的长冷却(如 direct_cooldown)
+
+    immediate=True 时立刻进入长冷却, 不等连续失败攒够次数 —— 用于对端明确
+    限流(429/403)的场景: 再多试一次都只会加深封禁。
+    """
     with _ustat_lock:
         s = _ustat.setdefault(_u_key(scope, name), _u_entry())
         s["fails"] = int(s.get("fails", 0)) + 1
         s["fail"] = int(s.get("fail", 0)) + 1
         hard = float(cooldown or 0)
-        if hard > 0 and s["fails"] >= int(CONFIG.get("direct_fail_max", 3)):
+        if hard > 0 and (immediate or s["fails"] >= int(CONFIG.get("direct_fail_max", 3))):
             s["cool_until"] = time.time() + hard
         else:
             s["cool_until"] = time.time() + min(30 * s["fails"], 300)
@@ -2323,6 +2330,53 @@ def srv_context():
 
 PROBE_RAW_PATH = "/octocat/Hello-World/master/README"
 
+# 公共镜像站多数是个人/公益维护的免费服务, 同一个 IP 探太勤会被限流甚至封禁
+# (表现为 429/403, 或者干脆回空响应)。所以主动探测有四道刹车:
+#   1) probe_interval 缺省或填 0 时, 下限 1 小时 —— 不再跟着 5 分钟的
+#      refresh_interval 走(那会让每个镜像每天被探近 300 次);
+#   2) 间隔 >= 10 分钟时加 ±10% 抖动, 避免多台机器同一秒开始探测;
+#   3) 对端明确回 429/403 时立即冷却 1 小时, 期间不再探它;
+#   4) 面板「刷新」触发的探测, 距上一轮不足 5 分钟则跳过(IP 验真照跑)。
+PROBE_MIN_INTERVAL = 3600
+PROBE_RATE_LIMIT_COOLDOWN = 3600
+PROBE_MANUAL_MIN_GAP = 300
+_last_probe_ts = 0.0
+
+
+def probe_interval_seconds():
+    """下一轮探测的等待秒数(兜底路径与长间隔带抖动)"""
+    try:
+        interval = int(CONFIG.get("probe_interval", 0) or 0)
+    except (TypeError, ValueError):
+        interval = 0
+    if interval <= 0:
+        # refresh_interval 是"IP 验真 / 面板数据"的周期, 不能直接拿来探镜像
+        interval = max(PROBE_MIN_INTERVAL,
+                       int(CONFIG.get("refresh_interval", 300) or 300))
+    if interval >= 600:
+        interval = int(interval * random.uniform(0.9, 1.1))
+    return max(1, interval)
+
+
+def probe_gap_ok(now=None):
+    """手动刷新用的闸门: 距上一轮探测是否已过最小间隔"""
+    now = time.time() if now is None else now
+    return (now - _last_probe_ts) >= PROBE_MANUAL_MIN_GAP
+
+
+def _u_cooling(scope, name, now=None):
+    """该上游是否还在冷却期 —— 冷却中别再探, 探了只是多挨一次限流"""
+    now = time.time() if now is None else now
+    with _ustat_lock:
+        s = _ustat.get(_u_key(scope, name)) or {}
+    return float(s.get("cool_until", 0.0) or 0.0) > now
+
+
+def _probe_rate_limited(exc):
+    """429/403 是对端在限流/拒绝, 与网络不通不同: 要长退避, 不能接着探"""
+    msg = str(exc)
+    return "HTTP 429" in msg or "HTTP 403" in msg
+
 
 def _probe_one(name, host, path, timeout):
     """用指定上游打开目标并读完响应; 任何失败都抛异常(由调用方记账)"""
@@ -2370,19 +2424,39 @@ def probe_specs():
     return specs
 
 
-def _probe_round():
-    """跑一轮探测 —— 后台周期任务与面板"立即刷新"共用同一份实现"""
+def _probe_round(manual=False):
+    """跑一轮探测 —— 后台周期任务与面板"立即刷新"共用同一份实现
+
+    manual=True 时受 PROBE_MANUAL_MIN_GAP 限制: 面板连点不会把公共镜像打到限流。
+    返回本轮是否真的跑了(被闸门挡掉时返回 False)。
+    """
+    global _last_probe_ts
+    if manual and not probe_gap_ok():
+        log.info("跳过本轮探测: 距上一轮仅 %.0fs, 避免公共镜像限流",
+                 time.time() - _last_probe_ts)
+        return False
+    _last_probe_ts = time.time()
     for host, path, names in probe_specs():
         for name in names:
+            if _u_cooling(host, name):
+                log.debug("跳过探测 %s <- %s: 冷却中", host, name)
+                continue
             t0 = time.time()
             try:
                 _probe_one(name, host, path, int(CONFIG.get("timeout", 60)))
                 _u_ok(host, name, time.time() - t0)
                 log.info("probe %s <- %s ok %.2fs", host, name, time.time() - t0)
             except Exception as exc:
-                _u_fail(host, name)
-                log.info("probe %s <- %s fail %s", host, name, repr(exc)[:40])
+                if _probe_rate_limited(exc):
+                    _u_fail(host, name, cooldown=PROBE_RATE_LIMIT_COOLDOWN,
+                            immediate=True)
+                    log.warning("probe %s <- %s 被限流(%s), 冷却 %ds 后再试",
+                                host, name, str(exc)[:40], PROBE_RATE_LIMIT_COOLDOWN)
+                else:
+                    _u_fail(host, name)
+                    log.info("probe %s <- %s fail %s", host, name, repr(exc)[:40])
     save_state()
+    return True
 
 
 def _probe_all():
@@ -2392,13 +2466,7 @@ def _probe_all():
         time.sleep(10)
     while not _stop.is_set():
         _probe_round()
-        try:
-            interval = int(CONFIG.get("probe_interval", 0) or 0)
-        except (TypeError, ValueError):
-            interval = 0
-        if interval <= 0:
-            interval = max(120, int(CONFIG.get("refresh_interval", 300) or 300))
-        if _stop.wait(interval):
+        if _stop.wait(probe_interval_seconds()):
             break
 
 
@@ -2502,20 +2570,31 @@ def refresh_now():
     """v0.2.0 第 10 条: 换网络后手动重跑一次"验真 + 探测"
 
     后台线程执行, 避免面板点一下就卡住几十秒(验真全部域名可能很慢)。
+    探测另有一道闸门: 距上一轮不足 PROBE_MANUAL_MIN_GAP 就只验真、不再探镜像 ——
+    换网络时验真才是关键, 反复点刷新不该变成对公共镜像的压测。
     """
+    can_probe = probe_gap_ok()
+
     def run():
         for host in sorted(refresh_hosts()):
             try:
                 pick_ips(host, force=True)
             except Exception:
                 pass
+        if not can_probe:
+            return
         try:
-            _probe_round()
+            _probe_round(manual=True)
         except Exception:
             pass
     threading.Thread(target=run, daemon=True).start()
-    return True, "已在后台重新验真 %d 个域名并探测上游, 稍后刷新本页查看" \
-        % len(refresh_hosts())
+    hosts = len(refresh_hosts())
+    if can_probe:
+        msg = "已在后台重新验真 %d 个域名并探测上游, 稍后刷新本页查看" % hosts
+    else:
+        msg = ("已在后台重新验真 %d 个域名; 上游探测距上次不足 %d 分钟, "
+               "本次跳过(避免公共镜像限流)" % (hosts, PROBE_MANUAL_MIN_GAP // 60))
+    return True, msg
 
 
 def _rel_time(seconds):
