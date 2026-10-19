@@ -35,6 +35,11 @@
 - 已安装的机器不受默认值影响 —— 升级会保留原 `config.json`，新默认值写在
   `config.json.new` 里供对比合并。
 
+### Fixed
+
+- **端口被占用时给出可读提示**：以前是 `Address already in use` 的裸 traceback，
+  现在明确说"改 `listen_port`"并给出查占用者的命令，且会先关掉指标服务器再退出。
+
 ### Documentation
 
 - **README 门面重做**：顶部改为"一句话定位 + 一行安装 + 实测前后对比"，

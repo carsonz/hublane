@@ -40,6 +40,25 @@ def free_port():
         return s.getsockname()[1]
 
 
+def free_ports(count):
+    """一次占用 count 个端口再统一释放
+
+    不能连着调 free_port() 取多个端口: 刚关掉的 ephemeral 端口很可能被内核立刻
+    再分配一次, 于是代理与面板拿到同一个端口 —— 面板先绑上, 代理绑不上但进程不退出,
+    表现为"面板能连、代理全部 ConnectionRefused"(2026-10-19 CI 上真实踩到)。
+    """
+    socks = []
+    try:
+        for _ in range(count):
+            s = socket.socket()
+            s.bind(("127.0.0.1", 0))
+            socks.append(s)
+        return [s.getsockname()[1] for s in socks]
+    finally:
+        for s in socks:
+            s.close()
+
+
 class Plain(threading.Thread):
     """本地明文假上游"""
 
@@ -96,9 +115,7 @@ class RuntimeE2E(unittest.TestCase):
         cls.tmp = tempfile.mkdtemp(prefix="hublane-e2e-")
         cls.home = os.path.join(cls.tmp, "home")
         os.makedirs(cls.home)
-        cls.proxy_port = free_port()
-        cls.metrics_port = free_port()
-        cls.origin_port = free_port()
+        cls.proxy_port, cls.metrics_port, cls.origin_port = free_ports(3)
         cls.origin = Plain(cls.origin_port)
         cls.origin.start()
 
@@ -123,17 +140,34 @@ class RuntimeE2E(unittest.TestCase):
             [sys.executable, cls.script, "--config",
              os.path.join(cls.home, "config.json")],
             stdout=cls.log, stderr=subprocess.STDOUT, env=env, cwd=cls.home)
-        deadline = time.time() + 30
+        # 两个端口都要等: 只等指标端口的话, 代理端口绑不上时进程并不会退出,
+        # 后面 18 个用例就只剩一排看不懂的 ConnectionRefused。
+        cls._wait_port(cls.metrics_port, what="指标端口")
+        cls._wait_port(cls.proxy_port, what="代理端口")
+
+    @classmethod
+    def _log_tail(cls, limit=2000):
+        try:
+            cls.log.flush()
+            cls.log.seek(0)
+            return cls.log.read()[-limit:].decode("utf-8", "replace")
+        except (OSError, ValueError):
+            return "(无法读取 out.log)"
+
+    @classmethod
+    def _wait_port(cls, port, timeout=30, what="端口"):
+        deadline = time.time() + timeout
         while time.time() < deadline:
             if cls.proc.poll() is not None:
-                raise AssertionError("hublane 启动即退出, 见 out.log")
+                raise AssertionError("hublane 启动即退出(exit=%s), out.log:\n%s"
+                                     % (cls.proc.returncode, cls._log_tail()))
             try:
-                with socket.create_connection(("127.0.0.1", cls.metrics_port), 1):
-                    break
+                with socket.create_connection(("127.0.0.1", port), 1):
+                    return
             except OSError:
                 time.sleep(0.2)
-        else:
-            raise AssertionError("hublane 30s 内未监听指标端口")
+        raise AssertionError("hublane %ds 内未监听%s %d, out.log:\n%s"
+                             % (timeout, what, port, cls._log_tail()))
 
     @classmethod
     def tearDownClass(cls):

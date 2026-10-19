@@ -96,6 +96,20 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def free_ports(count):
+    """一次占用 count 个端口再统一释放 —— 连着调 free_port() 可能拿到同一个端口"""
+    socks = []
+    try:
+        for _ in range(count):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.bind(("127.0.0.1", 0))
+            socks.append(sock)
+        return [sock.getsockname()[1] for sock in socks]
+    finally:
+        for sock in socks:
+            sock.close()
+
+
 class PlainOrigin(socketserver.ThreadingTCPServer):
     """明文假上游: 用路径前缀模拟正常 / 截断 / 立即断开三种行为"""
 
@@ -231,8 +245,7 @@ class ProxyTestCase(unittest.TestCase):
         for origin in self.origins:
             threading.Thread(target=origin.serve_forever, daemon=True).start()
 
-        self.listen_port = free_port()
-        self.metrics_port = free_port()
+        self.listen_port, self.metrics_port = free_ports(2)
         self.config = dict(H.DEFAULTS)
         self.config.update({
             "listen_host": "127.0.0.1",

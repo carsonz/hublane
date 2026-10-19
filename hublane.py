@@ -3780,8 +3780,19 @@ def main(argv=None):
     port = int(CONFIG.get("listen_port", 8899))
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((host, port))
-    server.listen(128)
+    try:
+        server.bind((host, port))
+        server.listen(128)
+    except OSError as exc:
+        # 常见于"上一个实例没退干净"/另一个代理占了同一端口。给可读提示,
+        # 而不是让用户对一行 Address already in use 的 traceback 猜。
+        log.error("无法监听 %s:%d: %s", host, port, exc)
+        log.error("端口被占用? 改 listen_port, 或查占用者: ss -ltnp | grep ':%d'",
+                  port)
+        _close(server)
+        _stop.set()
+        _stop_metrics()
+        return 1
     log.info("%s %s listening on %s:%d (socks5=%s)", APP, VERSION, host, port,
              CONFIG.get("enable_socks5", True))
     try:
