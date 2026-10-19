@@ -4,6 +4,7 @@
   或:  python -m pytest tests -q
 """
 import base64
+import errno
 import io
 import json
 import logging
@@ -863,6 +864,53 @@ class TestProbeThrottle(unittest.TestCase):
             self.assertTrue(H._probe_round(manual=True))
         finally:
             H.save_state = original
+
+
+class TestAcceptLoop(unittest.TestCase):
+    """单个连接被中断不能让整个监听循环退出
+
+    2026-10-19 CI 实测: 客户端在 accept 之前断开时 Linux 抛 ECONNABORTED,
+    以前 `except OSError: break` 会让主线程直接退出 —— 进程静默结束,
+    紧接着面板端口被 _stop_metrics 关掉, 外部只看到"代理突然不响应了"。
+    """
+
+    def setUp(self):
+        H._stop.clear()
+
+    def tearDown(self):
+        H._stop.clear()
+
+    def test_transient_errors_are_classified(self):
+        self.assertTrue(H._accept_error_is_transient(
+            ConnectionAbortedError(errno.ECONNABORTED, "aborted")))
+        self.assertTrue(H._accept_error_is_transient(
+            OSError(errno.EPROTO, "protocol error")))
+        self.assertFalse(H._accept_error_is_transient(
+            OSError(errno.ENOTSOCK, "not a socket")))
+        self.assertFalse(H._accept_error_is_transient(
+            OSError(errno.EMFILE, "too many open files")))
+
+    def test_aborted_connection_does_not_stop_the_loop(self):
+        class FakeServer:
+            """前两次 accept 抛 ECONNABORTED(模拟被 RST 的连接), 之后收工"""
+
+            def __init__(self):
+                self.calls = 0
+
+            def settimeout(self, _timeout):
+                pass
+
+            def accept(self):
+                self.calls += 1
+                if self.calls <= 2:
+                    raise ConnectionAbortedError(errno.ECONNABORTED, "aborted")
+                H._stop.set()
+                raise OSError(errno.ENOTSOCK, "listener gone")
+
+        server = FakeServer()
+        H._accept_loop(server)
+        self.assertGreaterEqual(server.calls, 3,
+                                "被 RST 的连接让 accept 循环提前退出了")
 
 
 class TestConnLimits(unittest.TestCase):

@@ -24,6 +24,7 @@ import argparse
 import base64
 import calendar
 import collections
+import errno
 import hmac
 import html
 import json
@@ -3487,6 +3488,17 @@ def _install_reload_handler():
         return False
 
 
+def _accept_error_is_transient(exc):
+    """accept() 的错误里, 哪些只是"这一个连接坏了", 不影响监听套接字本身
+
+    Linux 上客户端在 accept 之前就断开(或 RST)会抛 ECONNABORTED / EPROTO;
+    把它当成"监听坏了"会直接跳出循环、进程静默退出 —— 表现为服务突然不响应,
+    日志里什么都没有。这类错误只该跳过当前连接。
+    """
+    return isinstance(exc, (ConnectionAbortedError, ConnectionResetError)) or \
+        getattr(exc, "errno", None) in (errno.ECONNABORTED, errno.EPROTO, errno.EINTR)
+
+
 def _accept_loop(server):
     global _limiter
     limiter = _limiter = ConnLimiter(CONFIG.get("max_conns", 0))
@@ -3496,7 +3508,10 @@ def _accept_loop(server):
             conn, addr = server.accept()
         except socket.timeout:          # 3.10+ 即 TimeoutError
             continue
-        except OSError:
+        except OSError as exc:
+            if _accept_error_is_transient(exc):
+                continue
+            log.error("监听套接字不可用(%r), 停止接受新连接", exc)
             break
         if not limiter.acquire():       # 1.1: 超过 max_conns 直接拒绝
             _count("rejected")

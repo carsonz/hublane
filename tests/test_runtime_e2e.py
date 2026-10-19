@@ -235,6 +235,13 @@ class RuntimeE2E(unittest.TestCase):
         with open(os.path.join(cls.home, "config.json"), "w") as fh:
             json.dump(cfg, fh, indent=2)
 
+    def tearDown(self):
+        # 进程中途退出时, 后面的用例只会看到一排 ConnectionReset/Refused。
+        # 在这里先把子进程日志贴出来, 免得再去猜"为什么全挂了"。
+        if getattr(self, "proc", None) is not None and self.proc.poll() is not None:
+            raise AssertionError("hublane 子进程中途退出(exit=%s), out.log:\n%s"
+                                 % (self.proc.returncode, self._log_tail(3000)))
+
     # ---------- 工具 ----------
     def metrics(self, path, token="e2etoken", raw=False):
         conn = http.client.HTTPConnection("127.0.0.1", self.metrics_port, timeout=15)
