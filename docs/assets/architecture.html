@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<!-- 源文件:改这里再重新导出 PNG,不要直接改 PNG。
+     chromium --headless --disable-gpu --no-sandbox --hide-scrollbars \
+       --force-device-scale-factor=1 --window-size=1280,520 \
+       --screenshot=docs/assets/architecture.png docs/assets/architecture.html
+     (任意 Chromium/Chrome >= 90 均可;窗口尺寸必须与 html/body 的 width/height 一致) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hublane request routing</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1280px; height:520px; overflow:hidden; background:#0B1220; }
+  body { font-family:"Segoe UI","Microsoft YaHei",-apple-system,sans-serif; }
+</style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="520" viewBox="0 0 1280 520">
+  <defs>
+    <pattern id="grid" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0H0V64" fill="none" stroke="#8CBED7" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+    <marker id="ahN" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8FA9B8"/>
+    </marker>
+    <marker id="ahT" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#22D3EE"/>
+    </marker>
+    <marker id="ahG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#34D399"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="520" fill="#0B1220"/>
+  <rect width="1280" height="520" fill="url(#grid)"/>
+
+  <text x="40" y="30" fill="#6C8698" font-size="14" letter-spacing="1">HUBLANE &#183; REQUEST ROUTING</text>
+
+  <!-- ===== client ===== -->
+  <rect x="40" y="190" width="150" height="140" rx="10" fill="#FFFFFF" fill-opacity="0.035" stroke="#A0BED2" stroke-opacity="0.28"/>
+  <text x="58" y="220" fill="#EAF4F9" font-size="16" font-weight="700">Client</text>
+  <text x="58" y="246" fill="#B6CBD6" font-size="12.5">curl &#183; wget</text>
+  <text x="58" y="266" fill="#B6CBD6" font-size="12.5">git clone / push</text>
+  <text x="58" y="286" fill="#B6CBD6" font-size="12.5">npm &#183; pip &#183; go</text>
+  <text x="58" y="306" fill="#B6CBD6" font-size="12.5">browser &#183; IDE</text>
+  <text x="58" y="326" fill="#B6CBD6" font-size="12.5">any TCP client</text>
+
+  <!-- ===== hublane ===== -->
+  <rect x="270" y="185" width="200" height="145" rx="12" fill="#22D3EE" fill-opacity="0.09" stroke="#22D3EE" stroke-opacity="0.85"/>
+  <text x="290" y="216" fill="#7FE7F7" font-size="19" font-weight="700">hublane</text>
+  <text x="290" y="242" fill="#D9EDF4" font-size="13">127.0.0.1:8899</text>
+  <text x="290" y="266" fill="#9FB9C7" font-size="12.5">HTTP + SOCKS5</text>
+  <text x="290" y="286" fill="#9FB9C7" font-size="12.5">one port &#183; detected from</text>
+  <text x="290" y="304" fill="#9FB9C7" font-size="12.5">the first byte</text>
+  <text x="290" y="324" fill="#6C8698" font-size="12">route by hostname</text>
+
+  <!-- ===== metrics ===== -->
+  <rect x="270" y="380" width="200" height="105" rx="10" fill="#FFFFFF" fill-opacity="0.03" stroke="#A0BED2" stroke-opacity="0.30" stroke-dasharray="5 4"/>
+  <text x="290" y="408" fill="#CBDCE6" font-size="14" font-weight="700">Metrics panel</text>
+  <text x="290" y="431" fill="#8FA9B8" font-size="12.5">127.0.0.1:28898</text>
+  <text x="290" y="452" fill="#8FA9B8" font-size="12.5">/status &#183; /diag &#183; /pac</text>
+  <text x="290" y="472" fill="#6C8698" font-size="12">/requests &#183; /hosts</text>
+
+  <!-- ===== managed path ===== -->
+  <rect x="520" y="90" width="200" height="110" rx="10" fill="#22D3EE" fill-opacity="0.055" stroke="#22D3EE" stroke-opacity="0.45"/>
+  <text x="538" y="120" fill="#9FE8F5" font-size="15" font-weight="700">Managed domains</text>
+  <text x="538" y="145" fill="#B6CBD6" font-size="12.5">github.com</text>
+  <text x="538" y="163" fill="#B6CBD6" font-size="12.5">raw.githubusercontent.com</text>
+  <text x="538" y="181" fill="#B6CBD6" font-size="12.5">opt-in site groups</text>
+  <text x="538" y="197" fill="#6C8698" font-size="11.5">wildcards &#183; per-host chain</text>
+
+  <rect x="760" y="70" width="200" height="162" rx="10" fill="#22D3EE" fill-opacity="0.055" stroke="#22D3EE" stroke-opacity="0.45"/>
+  <text x="778" y="100" fill="#9FE8F5" font-size="15" font-weight="700">TLS terminated</text>
+  <text x="778" y="119" fill="#9FE8F5" font-size="15" font-weight="700">locally</text>
+  <text x="778" y="146" fill="#B6CBD6" font-size="12.5">CA generated on this</text>
+  <text x="778" y="164" fill="#B6CBD6" font-size="12.5">machine &#183; private key</text>
+  <text x="778" y="182" fill="#B6CBD6" font-size="12.5">never leaves it</text>
+  <text x="778" y="205" fill="#6C8698" font-size="11.5">credentials stay on</text>
+  <text x="778" y="219" fill="#6C8698" font-size="11.5">upstreams you control</text>
+
+  <rect x="1000" y="40" width="250" height="215" rx="10" fill="#22D3EE" fill-opacity="0.055" stroke="#22D3EE" stroke-opacity="0.45"/>
+  <text x="1018" y="68" fill="#9FE8F5" font-size="15" font-weight="700">Upstream chain</text>
+  <text x="1018" y="88" fill="#B6CBD6" font-size="12.5">auto-ranked every run by</text>
+  <text x="1018" y="106" fill="#B6CBD6" font-size="12.5">EWMA &#215; success rate</text>
+  <text x="1018" y="136" fill="#CBDCE6" font-size="12.5">&#183; gh-proxy / jsdelivr</text>
+  <text x="1018" y="156" fill="#CBDCE6" font-size="12.5">&#183; direct (DoH + TLS verify)</text>
+  <text x="1018" y="176" fill="#CBDCE6" font-size="12.5">&#183; watt (Windows accelerator)</text>
+  <text x="1018" y="196" fill="#CBDCE6" font-size="12.5">&#183; chain (your own node)</text>
+  <text x="1018" y="222" fill="#6C8698" font-size="11.5">integrity check &#183; transparent</text>
+  <text x="1018" y="238" fill="#6C8698" font-size="11.5">retry &#183; abort fast-fail</text>
+
+  <!-- ===== tunnel path ===== -->
+  <rect x="520" y="350" width="200" height="110" rx="10" fill="#34D399" fill-opacity="0.055" stroke="#34D399" stroke-opacity="0.45"/>
+  <text x="538" y="380" fill="#8BE9BE" font-size="15" font-weight="700">Everything else</text>
+  <text x="538" y="405" fill="#B6CBD6" font-size="12.5">not in the managed set,</text>
+  <text x="538" y="423" fill="#B6CBD6" font-size="12.5">or matched by abort</text>
+  <text x="538" y="445" fill="#6C8698" font-size="11.5">wildcard per-host rules</text>
+
+  <rect x="760" y="335" width="490" height="150" rx="10" fill="#34D399" fill-opacity="0.055" stroke="#34D399" stroke-opacity="0.45"/>
+  <text x="778" y="365" fill="#8BE9BE" font-size="15" font-weight="700">Plain TCP tunnel &#8212; no decryption, no rewriting</text>
+  <text x="778" y="392" fill="#B6CBD6" font-size="12.5">baidu, apt, internal services stay byte-for-byte identical to a direct connection</text>
+  <text x="778" y="418" fill="#6C8698" font-size="11.5">counted separately as tunnel connections / bytes, so they never pollute the HTTP numbers</text>
+  <text x="778" y="444" fill="#6C8698" font-size="11.5">and never enter the latency percentiles (a tunnel may live for minutes)</text>
+  <text x="778" y="470" fill="#6C8698" font-size="11.5">SSH git-over-443 works: the installer points git@github.com at ssh.github.com:443</text>
+
+  <!-- ===== arrows ===== -->
+  <path d="M190 260 L262 260" fill="none" stroke="#8FA9B8" stroke-width="1.6" marker-end="url(#ahN)"/>
+  <path d="M470 218 L500 218 L500 140 L514 140" fill="none" stroke="#22D3EE" stroke-width="1.6" marker-end="url(#ahT)"/>
+  <path d="M470 292 L500 292 L500 405 L514 405" fill="none" stroke="#34D399" stroke-width="1.6" marker-end="url(#ahG)"/>
+  <path d="M720 145 L754 145" fill="none" stroke="#22D3EE" stroke-width="1.6" marker-end="url(#ahT)"/>
+  <path d="M960 145 L994 145" fill="none" stroke="#22D3EE" stroke-width="1.6" marker-end="url(#ahT)"/>
+  <path d="M720 405 L754 405" fill="none" stroke="#34D399" stroke-width="1.6" marker-end="url(#ahG)"/>
+  <path d="M370 332 L370 374" fill="none" stroke="#8FA9B8" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#ahN)"/>
+</svg>
+</body>
+</html>

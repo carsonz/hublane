@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<!-- 源文件:改这里再重新导出 PNG,不要直接改 PNG。上传到仓库
+     Settings -> General -> Social preview(需手动点,没有 API)。
+     chromium --headless --disable-gpu --no-sandbox --hide-scrollbars \
+       --force-device-scale-factor=1 --window-size=1280,640 \
+       --screenshot=docs/assets/social-preview.png docs/assets/social-preview.html
+     (GitHub 社交预览建议 1280x640;任意 Chromium/Chrome >= 90 均可) -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>hublane social preview</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { width:1280px; height:640px; overflow:hidden; }
+  body {
+    background:
+      radial-gradient(900px 520px at 88% -10%, rgba(34,211,238,.16), transparent 62%),
+      radial-gradient(700px 500px at 8% 110%, rgba(52,211,153,.10), transparent 60%),
+      linear-gradient(158deg, #080D14 0%, #0C1725 52%, #102033 100%);
+    font-family: "Segoe UI", "Microsoft YaHei", -apple-system, sans-serif;
+    color:#E8F2F7;
+    position:relative;
+  }
+  /* subtle grid */
+  body::before {
+    content:"";
+    position:absolute; inset:0;
+    background-image:
+      linear-gradient(rgba(140,190,215,.055) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(140,190,215,.055) 1px, transparent 1px);
+    background-size: 64px 64px;
+    mask-image: radial-gradient(900px 620px at 60% 40%, #000 40%, transparent 100%);
+    -webkit-mask-image: radial-gradient(900px 620px at 60% 40%, #000 40%, transparent 100%);
+  }
+  .wrap { position:relative; padding:58px 64px; height:640px; display:flex; flex-direction:column; }
+  .top { display:flex; gap:170px; align-items:flex-start; }
+
+  .brand { display:flex; align-items:center; gap:20px; }
+  .wordmark {
+    font-size:76px; font-weight:700; letter-spacing:-2.5px; line-height:1;
+    background:linear-gradient(92deg,#FFFFFF 20%, #9FE8F5 100%);
+    -webkit-background-clip:text; background-clip:text; color:transparent;
+  }
+  .tagline {
+    margin-top:22px; font-size:25px; line-height:1.5; color:#A9C2D2; font-weight:400; max-width:640px;
+  }
+  .tagline b { color:#E8F2F7; font-weight:600; }
+
+  .chips { margin-top:30px; display:flex; gap:12px; flex-wrap:wrap; }
+  .chip {
+    font-size:15px; padding:8px 15px; border-radius:999px;
+    border:1px solid rgba(34,211,238,.30); background:rgba(34,211,238,.07);
+    color:#9FE8F5; letter-spacing:.2px;
+  }
+  .chip.alt { border-color:rgba(52,211,153,.30); background:rgba(52,211,153,.07); color:#8BE9BE; }
+
+  /* terminal card */
+  .term {
+    margin-top:6px; width:470px; border-radius:16px; overflow:hidden;
+    background:rgba(255,255,255,.045); border:1px solid rgba(140,200,225,.18);
+    box-shadow: 0 24px 60px rgba(0,0,0,.42);
+  }
+  .bar { height:38px; display:flex; align-items:center; gap:8px; padding:0 16px;
+         background:rgba(255,255,255,.045); border-bottom:1px solid rgba(140,200,225,.12); }
+  .dot { width:11px; height:11px; border-radius:50%; }
+  .d1{background:#F4715F} .d2{background:#F5BE4F} .d3{background:#5FCF80}
+  .bar span { margin-left:10px; font-size:13px; color:#7C97A8; font-family:"Cascadia Code","Consolas",monospace; }
+  .code { padding:20px 20px 24px; font-family:"Cascadia Code","Consolas","SFMono-Regular",monospace; font-size:16px; line-height:1.85; }
+  .c-dim { color:#66808F; }
+  .c-cmd { color:#DCE9F1; }
+  .c-ok  { color:#5FCF80; }
+  .c-cy  { color:#22D3EE; }
+  .c-mut { color:#5A7385; }
+
+  .bottom {
+    margin-top:auto; display:flex; justify-content:space-between; align-items:center;
+    padding-top:22px; border-top:1px solid rgba(140,200,225,.14);
+    font-size:15px; color:#7C97A8; letter-spacing:.3px;
+  }
+  .bottom .r { color:#5A7385; }
+
+  /* 中间那条事实带: 三个卖点, 免得大片留白 */
+  .strip { margin-top:46px; display:flex; gap:58px; }
+  .fact { display:flex; flex-direction:column; gap:8px; }
+  .fact .k {
+    font-size:12.5px; letter-spacing:1.7px; text-transform:uppercase;
+    color:#5A7385;
+  }
+  .fact .v { font-size:16.5px; color:#CBDCE6; }
+  .fact .v b { color:#9FE8F5; font-weight:600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <div>
+      <div class="brand">
+        <svg width="60" height="60" viewBox="0 0 56 56" aria-hidden="true">
+          <rect x="1.5" y="1.5" width="53" height="53" rx="14" fill="none" stroke="#22D3EE" stroke-width="2" opacity=".45"/>
+          <rect x="11" y="17" width="22" height="4" rx="2" fill="#22D3EE" opacity=".95"/>
+          <rect x="11" y="26" width="30" height="4" rx="2" fill="#22D3EE" opacity=".65"/>
+          <rect x="11" y="35" width="16" height="4" rx="2" fill="#22D3EE" opacity=".40"/>
+          <circle cx="44" cy="28" r="4.6" fill="#34D399"/>
+        </svg>
+        <div class="wordmark">hublane</div>
+      </div>
+
+      <div class="tagline">
+        Local relay proxy that makes <b>GitHub reliably reachable</b><br>
+        from <b>WSL</b> and <b>Windows</b> — one codebase, both platforms.
+      </div>
+
+      <div class="chips">
+        <span class="chip">Pure Python stdlib</span>
+        <span class="chip">Zero dependencies</span>
+        <span class="chip alt">MIT</span>
+        <span class="chip alt">No telemetry</span>
+      </div>
+    </div>
+
+    <div class="term">
+      <div class="bar">
+        <i class="dot d1"></i><i class="dot d2"></i><i class="dot d3"></i>
+        <span>bash</span>
+      </div>
+      <div class="code">
+        <div><span class="c-dim">$ </span><span class="c-cmd">curl -I https://github.com</span></div>
+        <div><span class="c-ok">HTTP/2 200   ·   1.2 s</span></div>
+        <div style="height:10px"></div>
+        <div><span class="c-dim">$ </span><span class="c-cmd">curl -fsSL opencode.ai/install | bash</span></div>
+        <div><span class="c-ok">200 · 1.9 s</span>  <span class="c-mut"># via raw mirror</span></div>
+        <div style="height:10px"></div>
+        <div><span class="c-mut"># raw.githubusercontent.com</span></div>
+        <div><span class="c-dim">before: </span><span class="c-cmd">TCP RST</span>  <span class="c-cy">→</span>  <span class="c-ok">after: 200</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="strip">
+    <div class="fact">
+      <span class="k">One port</span>
+      <span class="v">HTTP + SOCKS5, sniffed from the first byte</span>
+    </div>
+    <div class="fact">
+      <span class="k">Upstream ranking</span>
+      <span class="v"><b>EWMA latency</b> &#215; success rate</span>
+    </div>
+    <div class="fact">
+      <span class="k">Observability</span>
+      <span class="v">self-hosted panel &#183; /status /diag /pac</span>
+    </div>
+  </div>
+
+  <div class="bottom">
+    <div>github.com/carsonz/hublane</div>
+    <div class="r">gitee.com/carsonz_admin/hublane</div>
+  </div>
+
+</div>
+</body>
+</html>

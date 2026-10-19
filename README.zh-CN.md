@@ -2,21 +2,62 @@
 
 [English](./README.md) | 简体中文
 
-> **hublane** —— 让 WSL 与 Windows 稳定访问 GitHub 的本地中继代理。
-> 纯 Python 标准库，零第三方依赖，一份代码同时跑在 WSL 和 Windows。
-> 版本 **0.2.0** —— 清掉 0.1.0 里"文档写了、代码没兑现"的项，并新增动态已验真 IP 池、
-> `abort` 快速失败上游、面板控制（刷新 / 暂停 / 列头排序 / URL→命令）、
-> `--check-update` / `--update` 与只读的 `GET /hosts`。
-> 版本号只在一处设置：`hublane.py` 的 `VERSION`，打包配置在构建期读取它。
-> Rust/Go 移植明确不做，见 [ROADMAP](./ROADMAP.md) · 架构见 [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) ·
-> 排障见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
-
 ![CI](https://github.com/carsonz/hublane/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/carsonz/hublane/badge)](https://securityscorecards.dev/viewer/?uri=github.com/carsonz/hublane)
 
+[![Gitee mirror](https://img.shields.io/badge/Gitee-%E9%95%9C%E5%83%8F-orange)](https://gitee.com/carsonz_admin/hublane)
+[![Star History](https://api.star-history.com/svg?repos=carsonz/hublane&type=Date)](https://star-history.com/#carsonz/hublane&Date)
+
+> **一条命令，让 WSL 与 Windows 稳定访问 GitHub。**
+> 纯 Python 标准库 · 零第三方依赖 · 一份代码双平台。
+> 当前版本 **v0.2.0** —— [更新日志](./CHANGELOG.md) · [路线图](./ROADMAP.md) · [架构](./docs/ARCHITECTURE.md) · [排障](./docs/TROUBLESHOOTING.md)
+
+**它解决什么**：受限网络下 `github.com` 常常超时，`raw.githubusercontent.com` 在 TCP 层直接被 RST。
+而绝大多数安装脚本都放在 `raw` 上，所以 `curl -fsSL https://opencode.ai/install | bash` 这类命令必然失败。
+
+| | 没有 hublane | 有 hublane |
+|---|---|---|
+| `github.com` | 超时 | **200 · 577 KB · 1.2s** |
+| `raw.githubusercontent.com` | TCP 立即 RST | hermes `install.sh` **200 · 1.9s** |
+| `curl … \| bash` 安装脚本 | 必然失败 | 正常跑通 |
+
+**安装**
+
+```bash
+sudo bash ~/hublane/install.sh && exec zsh      # WSL / Ubuntu / Debian
+install-windows.bat                              # Windows
+```
+
+![hublane 请求路由](./docs/assets/architecture.png)
+
+受管域名解密后经自动排序的上游链取回；其它一切域名走**纯 TCP 隧道** —— 不解密、不改写，
+与直连逐字节一致，因此 baidu、`apt`、内网服务完全不受影响。
+
 ---
+
+## 与同类工具的对比
+
+访问 GitHub 的办法不止一种。下表只说明 hublane 的设计取向；同类工具的信息来自各自公开
+README，可能随版本变化 —— 以其仓库现状为准。
+
+| | hublane | dev-sidecar | Watt Toolkit | 公共镜像（gh-proxy） |
+|---|---|---|---|---|
+| 运行时 | **纯 Python 标准库，无任何第三方包** | 基于 Electron/Node 的桌面应用 | 桌面 GUI 应用 | 服务端，不在本机 |
+| 形态 | 单文件 `hublane.py`，也可 `pip install hublane` | 安装包 | 安装包 | 网页 |
+| 平台 | **WSL + Windows 同一份代码** | Windows / macOS | Windows / macOS | 任意 |
+| 上游选择 | 按 EWMA × 成功率自动排序，带冷却 | 测速优选 | 手动切换 | 无 |
+| 响应被截断 | 校验后透明回落到下一个上游 | — | — | — |
+| 连接复用 | 探活 + 新连接透明重试 | — | — | — |
+| 携带凭证的请求 | **绝不转发给第三方镜像** | 取决于实现 | 留在本机 | 会经过镜像运营方 |
+| 可观测性 | 自托管 HTML 面板，`/status` `/requests` `/diag` | GUI | GUI | 无 |
+| 遥测 | 无（明确不做） | — | — | 取决于运营方 |
+| 许可 | MIT | MIT | 以其仓库为准 | 各异 |
+
+如果你要的是**可审计、可脚本化、零依赖**、能从头读到尾的工具，选 hublane；
+如果你更想要点开就用的图形界面、不在乎读代码，桌面应用更合适。
+
 
 ## 它解决什么问题
 
@@ -85,7 +126,16 @@ curl -fsSL https://opencode.ai/install | bash
   （失败要多付一次回落代价，纯看延迟会做出错误选择）
 - 成功率低于 `success_floor`（默认 0.5）且样本足够 → 直接降到"低成功率"档；
   样本不足（< 3 次）视为"未证明"，排在已证明可用的上游之后
-- 后台每 120 秒探测一轮（启动 10 秒先跑一轮）；状态落盘 `state.json`，重启即恢复
+- 后台探测间隔 = `probe_interval`，发行版 `config.json` 默认 **14400 秒（4 小时）**；
+  填 `0` 则跟随 `refresh_interval`，且**下限 1 小时**；启动 10 秒先跑一轮；
+  状态落盘 `state.json`，重启即恢复
+
+**为什么探测这么克制**：公共镜像多是个人/公益维护的免费服务，同一个 IP 探太勤会被
+限流甚至封禁（`429` / `403`），之后连正常请求一起失败。所以探测有四道刹车：
+4 小时的默认间隔（填 `0` 时下限 1 小时）、间隔 ≥ 10 分钟时 ±10% 抖动、收到
+`429`/`403` 立即冷却 **1 小时**（不做"重试到成功"）、面板「刷新」触发的探测有
+**5 分钟闸门**（IP 验真照跑）。把 `probe_interval` 调小换来的主要是封禁 ——
+健康度本来就主要来自真实流量，探测只负责冷启动和淘汰长期失效的镜像。
 
 实测：初始默认 `ghproxy.net`（1.77~2.0s）会自动切到 `gh-proxy.com`（**0.76~0.99s**），**快约 2 倍**。
 
@@ -233,7 +283,7 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 | `pool_enabled` / `pool_max_idle` / `pool_probe` | 上游连接池 / 空闲上限 / 复用前探活 |
 | `pool_max_per_key` / `pool_max_total` | 每个 `域名\|上游` 的连接上限（默认 4）/ 全局上限（默认 64，按 LRU 淘汰） |
 | `client_timeout` / `max_conns` | 客户端连接空闲上限（默认 60s，防 slowloris —— 故意慢速发请求头、长时间占住连接）/ 并发上限（默认 256，超限直接拒绝） |
-| `probe_enabled` / `probe_delay` / `probe_interval` / `probe_extra_max` | 全链路主动探测：开关 / 首轮延迟 / 间隔（0 = 跟随 `refresh_interval`）/ 每轮探测几个额外站点 |
+| `probe_enabled` / `probe_delay` / `probe_interval` / `probe_extra_max` | 全链路主动探测：开关 / 首轮延迟 / 间隔（发行版默认 **14400** = 4 小时；`0` 跟随 `refresh_interval`，下限 1 小时）/ 每轮探测几个额外站点 |
 | `cert_expire_warn_days` | 证书剩余天数低于该值时启动告警（默认 90 天），续期用 `--renew-certs` |
 | `proxy_token` / `proxy_uid_whitelist` | 本地访问控制：代理口令（HTTP `407` / SOCKS5 用户名密码）/ 允许的 uid 白名单（Linux 上按发起方进程的用户 ID 判定） |
 | `log_format` / `sample_size` | 日志格式 `text` 或 `json`（单行结构化）/ 最近请求样本条数（0 = 关闭） |
@@ -334,7 +384,7 @@ WSL：`/opt/hublane/config.json`；Windows：`%LOCALAPPDATA%\hublane\config.json
 - 大流量场景（容器镜像、大型 Release 包）经 Python 中继吞吐有限，
   建议这类域名用 `per_host_upstreams` 指向 `chain`（自己的节点）。
 - `raw` 之外的链（`github_upstreams` / `extra_upstreams`）没有后台主动探测，
-  健康度只来自真实流量；raw 镜像则每 120 秒主动探测一轮。
+  健康度只来自真实流量；raw 镜像按 `probe_interval` 主动探测（发行版默认 4 小时一轮）。
 - 排障手册见 [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md)。
 
 ## 排障
@@ -369,6 +419,12 @@ hublane 是一款**个人、自托管的效率工具**，用于帮助处于受�
 - 请勿利用它访问你无权访问的资源。
 - CA 证书在**本机安装时本地生成**，绝不会被发送到任何地方。请仅在你信任且可控制的机器上安装它，并在不再使用时移除。
 - 私钥/证书处理与漏洞上报策略见 [SECURITY.md](./SECURITY.md)。
+
+## 参与贡献
+
+欢迎提 PR —— 开发环境、零依赖约束与发布流程见 [CONTRIBUTING.md](./CONTRIBUTING.md)。
+想找入门任务？打了 `good first issue` / `help wanted` 标签的 issue 都是自包含的：
+背景、约束、验收标准都写在里面，且不需要联网、不需要 root。
 
 ## 许可证
 

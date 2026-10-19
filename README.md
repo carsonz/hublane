@@ -2,26 +2,66 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-> **hublane** — a local relay proxy that makes GitHub reliably reachable from WSL and Windows.
-> Pure Python standard library. Zero third-party dependencies. One codebase, both platforms.
-> Version **0.2.0** — closes the items 0.1.0 documented but never delivered, and adds
-> a dynamic verified-IP pool, an `abort` fast-fail upstream, panel controls
-> (refresh / pause / sortable columns / URL→command), `--check-update` / `--update`,
-> and read-only `GET /hosts`. The version lives in exactly one place: `VERSION` in
-> `hublane.py`; the packaging config reads it at build time.
-> Relay core (streaming, SOCKS5 + HTTP on one port), adaptive upstream chains,
-> the HTML panel with `/status` / `/requests` / `/diag`, the hardening baseline
-> and the install scripts ship together. The Rust/Go
-> port is deliberately not planned; see [ROADMAP](./ROADMAP.md),
-> [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) and
-> [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
-
 ![CI](https://github.com/carsonz/hublane/actions/workflows/ci.yml/badge.svg?branch=main&logo=github&label=CI)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/carsonz/hublane/badge)](https://securityscorecards.dev/viewer/?uri=github.com/carsonz/hublane)
 
+[![Gitee mirror](https://img.shields.io/badge/Gitee-%E9%95%9C%E5%83%8F-orange)](https://gitee.com/carsonz_admin/hublane)
+[![Star History](https://api.star-history.com/svg?repos=carsonz/hublane&type=Date)](https://star-history.com/#carsonz/hublane&Date)
+
+> **One command to make GitHub reliably reachable from WSL and Windows.**
+> Pure Python standard library · zero third-party dependencies · one codebase for both platforms.
+> Current release **v0.2.0** — [CHANGELOG](./CHANGELOG.md) · [ROADMAP](./ROADMAP.md) · [ARCHITECTURE](./docs/ARCHITECTURE.md) · [TROUBLESHOOTING](./docs/TROUBLESHOOTING.md)
+
+**The problem:** on restricted networks `github.com` times out and `raw.githubusercontent.com`
+is reset at the TCP layer. Since virtually every install script lives on `raw`, commands like
+`curl -fsSL https://opencode.ai/install | bash` simply never succeed.
+
+| | Without hublane | With hublane |
+|---|---|---|
+| `github.com` | timeout | **200 · 577 KB · 1.2 s** |
+| `raw.githubusercontent.com` | immediate TCP RST | hermes `install.sh` **200 · 1.9 s** |
+| `curl … \| bash` installers | always fail | work |
+
+**Install**
+
+```bash
+sudo bash ~/hublane/install.sh && exec zsh        # WSL / Ubuntu / Debian
+install-windows.bat                                # Windows
+```
+
+![hublane request routing](./docs/assets/architecture.png)
+
+Managed domains are decrypted and fetched through an auto-ranked upstream chain; everything
+else is a **plain TCP tunnel** — no decryption, no rewriting, byte-for-byte identical to a
+direct connection, so `baidu`, `apt` and internal services are completely unaffected.
+
 ---
+
+## Compared to alternatives
+
+hublane is not the only way to reach GitHub from a restricted network. The table below states
+where hublane deliberately differs. Competitor details reflect each project's public README at
+the time of writing and may change — check their repositories for the current picture.
+
+| | hublane | dev-sidecar | Watt Toolkit | public mirror (gh-proxy) |
+|---|---|---|---|---|
+| Runtime | **pure Python stdlib, no third-party packages** | desktop app on an Electron/Node runtime | desktop GUI app | server-side, not on your machine |
+| Shape | a single `hublane.py`, also `pip install hublane` | installer | installer | web page |
+| Platforms | **WSL + Windows from one codebase** | Windows / macOS | Windows / macOS | any |
+| Upstream selection | auto-ranked by EWMA × success rate, with cooldown | speed-based selection | manual switching | none |
+| Truncated responses | verified, then transparent fallback to the next upstream | — | — | — |
+| Connection reuse | liveness probe + transparent retry on a fresh connection | — | — | — |
+| Requests with credentials | **never forwarded to third-party mirrors** | implementation-specific | stays on the machine | passes through the mirror operator |
+| Observability | self-hosted HTML panel, `/status` `/requests` `/diag` | GUI | GUI | none |
+| Telemetry | none (explicitly out of scope) | — | — | depends on the operator |
+| License | MIT | MIT | see upstream project | varies |
+
+Pick hublane when you want something **auditable, scriptable and dependency-free** that you can
+read end to end. Pick a desktop app when you prefer a point-and-click GUI and do not need to
+inspect the code.
+
 
 ## The problem
 
@@ -91,8 +131,20 @@ rate** per upstream, keyed by `domain|upstream`:
 - Below `success_floor` (default 0.5) with enough samples → demoted to a
   "low success rate" tier; too few samples (< 3) counts as "unproven" and sorts
   after proven upstreams
-- A background probe runs every 120 s (first round 10 s after start); state is
-  persisted to `state.json`, so the best ordering survives restarts
+- A background probe round runs every `probe_interval` — the shipped `config.json`
+  sets **14400 s (4 h)**; `0` means follow `refresh_interval` with a **1 h floor**.
+  The first round runs 10 s after start. State is persisted to `state.json`,
+  so the best ordering survives restarts
+
+**Why probing is deliberately sparing.** Public mirrors are free, community-run
+services, and hammering one from a single IP gets you rate-limited or banned
+(`429` / `403`) — after which even normal requests fail. So the probe path has four
+brakes: the 4 h default (1 h floor when set to `0`), ±10% jitter for intervals
+≥ 10 min, an immediate **1 h cooldown** on any `429`/`403` (no "retry until it
+works"), and a **5 min gate** on manual `/refresh`-triggered probes (IP
+re-verification still runs). Lowering `probe_interval` mainly buys you a ban —
+health mostly comes from real traffic anyway; probing only supplies cold-start data
+and retires long-dead mirrors.
 
 Measured: the default `ghproxy.net` (1.77–2.0 s) is automatically replaced by `gh-proxy.com` (**0.76–0.99 s**) — **roughly 2× faster**.
 
@@ -241,7 +293,7 @@ WSL: `/opt/hublane/config.json`; Windows: `%LOCALAPPDATA%\hublane\config.json`.
 | `pool_enabled` / `pool_max_idle` / `pool_probe` | connection pool / idle cap / liveness probe before reuse |
 | `pool_max_per_key` / `pool_max_total` | connections per `domain\|upstream` (4) / global cap (64, LRU eviction) |
 | `client_timeout` / `max_conns` | client idle cap (60 s, slowloris guard) / concurrent connection cap (256, rejects beyond it) |
-| `probe_enabled` / `probe_delay` / `probe_interval` / `probe_extra_max` | active probing: toggle / first-round delay / interval (0 = follow `refresh_interval`) / how many extra sites per round |
+| `probe_enabled` / `probe_delay` / `probe_interval` / `probe_extra_max` | active probing: toggle / first-round delay / interval (**14400** = 4 h in the shipped config; `0` follows `refresh_interval`, floor 1 h) / how many extra sites per round |
 | `cert_expire_warn_days` | warn at startup when a certificate has fewer days left (90); renew with `--renew-certs` |
 | `proxy_token` / `proxy_uid_whitelist` | local access control: proxy password (HTTP `407` / SOCKS5 user+pass) / allowed uid list (Linux) |
 | `log_format` / `sample_size` | log format `text` or `json` (single-line structured) / number of recent request samples (0 = off) |
@@ -330,7 +382,7 @@ CSS still references the blocked gstatic host.
   `per_host_upstreams`.
 - Chains other than `raw` (`github_upstreams` / `extra_upstreams`) get no active
   background probing — their health comes from real traffic only, while raw mirrors
-  are probed every 120 s.
+  get an active probe every `probe_interval` (4 h in the shipped config).
 - Troubleshooting: [docs/TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md).
 
 ## Troubleshooting
@@ -375,6 +427,14 @@ files, install scripts) they are authorized to access.
   control, and remove it when you stop using hublane.
 - See [SECURITY.md](./SECURITY.md) for private-key handling and the
   vulnerability-reporting policy.
+
+## Contributing
+
+Pull requests are welcome — see [CONTRIBUTING.md](./CONTRIBUTING.md) for the dev
+setup, the zero-dependency rules and the release flow. Looking for a starting
+point? Issues labelled `good first issue` / `help wanted` are self-contained by
+design: background, constraints and acceptance criteria are all written down, and
+none of them need internet access or root.
 
 ## License
 
